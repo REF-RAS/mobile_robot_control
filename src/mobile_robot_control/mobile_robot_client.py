@@ -36,6 +36,9 @@ class MobileRobotClient(object):
         self.topics = {}
         self.services = {}
         self.tf_clients = {}
+        # (reference_frame, target_frame) -> the callback actually registered,
+        # so tf_unsubscribe can remove the right one.
+        self._tf_callbacks = {}
         self.action_clients = {}
 
         self.cmd_vel = AttrDict(
@@ -77,8 +80,16 @@ class MobileRobotClient(object):
         if callback is None:
             callback = self._receive_tf_frame_callback
         tf_client.subscribe(target_frame, callback)
+        self._tf_callbacks[(reference_frame, target_frame)] = callback
         if timeout:
-            Timer(timeout, self.tf_unsubscribe(target_frame, reference_frame)).start()
+            # NOTE: this used to read
+            #     Timer(timeout, self.tf_unsubscribe(target_frame, reference_frame)).start()
+            # where the parentheses call tf_unsubscribe immediately and hand its
+            # return value (None) to Timer as the function to run. So the
+            # unsubscribe fired at subscribe time instead of after `timeout`,
+            # and the timer then raised TypeError on None in a background
+            # thread. Pass the function and its arguments separately.
+            Timer(timeout, self.tf_unsubscribe, args=(target_frame, reference_frame)).start()
 
     def _receive_tf_frame_callback(self, message):
         pose_point = Point(
@@ -107,9 +118,20 @@ class MobileRobotClient(object):
         """
         if self.tf_clients.get(reference_frame):
             tf_client = self.tf_clients.get(reference_frame)
+            # Unsubscribe the callback that was actually registered. This used
+            # to always pass _receive_tf_frame_callback, so a subscription made
+            # with any other callback (MobileRobot.RCF uses its own) was never
+            # matched.
+            callback = self._tf_callbacks.pop(
+                (reference_frame, target_frame), self._receive_tf_frame_callback
+            )
             try:
-                tf_client.unsubscribe(target_frame, self._receive_tf_frame_callback)
-            except TypeError:
+                tf_client.unsubscribe(target_frame, callback)
+            except (TypeError, KeyError, ValueError):
+                # roslibpy's TFClient.unsubscribe does frame["cbs"].pop(callback),
+                # i.e. list.pop() with a callable as the index, which raises
+                # TypeError before it can drop the frame. Nothing to do about
+                # that here beyond not letting it propagate.
                 pass
 
     def service_provide(self, service_name, service_type, handler=None):
@@ -212,8 +234,11 @@ class MobileRobotClient(object):
     def print_msg_callback(self, message):
         print(message["data"])
 
-    def load_from_robot(self):
-        self.robot = self.ros_client.load_robot()
+    def load_from_robot(self, load_geometry=True, **kwargs):
+        # compas_fab 2.x: `load_robot` was replaced by `load_robot_cell`, which
+        # returns a RobotCell (model + semantics) instead of a Robot.
+        self.robot_cell = self.ros_client.load_robot_cell(load_geometry=load_geometry, **kwargs)
+        return self.robot_cell
 
     def load_from_urdf(self):
         raise NotImplementedError
@@ -334,10 +359,11 @@ class MobileRobotClient(object):
         treq_max = max(*treq)
         vreq = [pos / treq_max for pos in configuration.joint_values]
         rostime = self.ros_client.get_time()
-        rostime1 = Duration.from_data(rostime)
+        # compas 2.x dropped Data.from_data()/.data in favour of __from_data__/__data__.
+        rostime1 = Duration.__from_data__(rostime)
         rostime1.secs += treq_max
         rostime1.nsecs += treq_max
-        rostime2 = Duration.from_data(rostime1.data)
+        rostime2 = Duration.__from_data__(rostime1.__data__)
         rostime2.secs += treq_max
         rostime2.nsecs += treq_max
 
@@ -345,7 +371,7 @@ class MobileRobotClient(object):
             positions=configuration.joint_values,
             velocities=[1, 1, 1, 1, 1, 1],
             accelerations=[1, 1, 1, 1, 1, 1],
-            time_from_start=rostime1.data,
+            time_from_start=rostime1.__data__,
         )
         jtp0 = JointTrajectoryPoint(
             positions=[0, 0, 0, 0, 0, 0],
@@ -357,7 +383,7 @@ class MobileRobotClient(object):
             positions=[0, 0, 0, 0, 0, 0],
             velocities=[0, 0, 0, 0, 0, 0],
             accelerations=[0, 0, 0, 0, 0, 0],
-            time_from_start=rostime2.data,
+            time_from_start=rostime2.__data__,
         )
         jt = JointTrajectory(
             header=Header(stamp=rostime, frame_id=""),

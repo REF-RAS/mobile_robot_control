@@ -1,38 +1,83 @@
-from compas_fab.robots import Robot
+"""Mobile robot wrapper.
 
-from compas.geometry import Frame, Point, Vector
-from compas.geometry import Transformation, Translation, Quaternion
-from roslibpy import Message, Topic, Service, tf
+COMPAS FAB v2.0.1
+
+In compas_fab 1.x this class subclassed ``compas_fab.robots.Robot``, which held
+the model, semantics, artist and client, and exposed planning directly on the
+robot.  ``Robot`` no longer exists in 2.x.  The cell (robot model + semantics +
+tools + rigid bodies) now lives in :class:`compas_fab.robots.RobotCell`, its
+pose in :class:`compas_fab.robots.RobotCellState`, and planning moved onto a
+planner such as :class:`compas_fab.backends.MoveItPlanner`.
+
+``MobileRobot`` is therefore a plain wrapper holding those objects, plus the
+mobile-base coordinate frame algebra (WCF / BCF / RCF) it always had.
+
+Coordinate frames
+-----------------
+The MoveIt backend expects planning targets relative to the robot model's root
+link, but returns forward kinematics relative to
+``robot_cell_state.robot_base_frame``.  To keep a single convention, this class
+leaves ``robot_base_frame`` at worldXY and performs the WCF <-> BCF conversion
+itself, exactly as the v1 code did.  Pass frames in WCF to the planning helpers
+(the default), or set ``frame_in_wcf=False`` to pass them in BCF.
+"""
+
+from compas.geometry import Frame, Point, Quaternion
+from compas.geometry import Transformation
+
+from compas_fab.robots import ConfigurationTarget
+from compas_fab.robots import FrameTarget
+from compas_fab.robots import RobotCell
+from compas_fab.robots import TargetMode
+from compas_fab.robots import ToolState
 
 __all__ = ["MobileRobot"]
 
 
-class MobileRobot(Robot):
-    """Represents a robot, which can be moved in the world coordinate system."""
+class MobileRobot(object):
+    """A robot cell whose base can be moved in the world coordinate system.
+
+    Parameters
+    ----------
+    robot_cell : :class:`compas_fab.robots.RobotCell`
+        The cell holding the robot model, semantics and any tools.
+    robot_cell_state : :class:`compas_fab.robots.RobotCellState`, optional
+        The cell state.  Defaults to ``robot_cell.default_cell_state()``.
+    scene_object : :class:`compas.scene.SceneObject`, optional
+        Scene object used to draw the cell.  Replaces the v1 ``artist``.
+    client : :class:`compas_fab.backends.RosClient`, optional
+    mobile_client : :class:`mobile_robot_control.MobileRobotClient`, optional
+    planner : :class:`compas_fab.backends.PlannerInterface`, optional
+        Planner used for IK and motion planning.  If omitted and a ``client`` is
+        given, call :meth:`attach_planner` to build a ``MoveItPlanner``.
+    """
 
     def __init__(
         self,
-        model,
-        artist=None,
-        semantics=None,
+        robot_cell,
+        robot_cell_state=None,
+        scene_object=None,
         client=None,
         mobile_client=None,
-        **kwargs,
+        planner=None,
+        **kwargs
     ):
-        super(MobileRobot, self).__init__(model, artist, semantics, client)
+        if not isinstance(robot_cell, RobotCell):
+            raise TypeError(
+                "MobileRobot expects a compas_fab.robots.RobotCell. "
+                "In compas_fab 2.x, load one with `ros_client.load_robot_cell(...)` "
+                "instead of passing a RobotModel."
+            )
 
-        """
-        documentation
-        """
-
-        self._scale_factor = 1.0
-        self.model = model
-        self.artist = artist
-        self.semantics = semantics
+        self.robot_cell = robot_cell
+        self.robot_cell_state = robot_cell_state or robot_cell.default_cell_state()
+        self.scene_object = scene_object
         self.client = client
         self.mobile_client = mobile_client
+        self.planner = planner
+
+        self._scale_factor = 1.0
         self.attributes = {}
-        self._current_ik = {"request_id": None, "solutions": None}
 
         self._lift_height = 0  # lift height
 
@@ -48,6 +93,429 @@ class MobileRobot(Robot):
         self._PCF = (
             Frame.worldXY()
         )  # frame for element pick-up on mobile robot's base in RCF (PCF)
+
+    # ==========================================================================
+    # cell access
+    # ==========================================================================
+
+    @property
+    def robot_model(self):
+        """:class:`compas_robots.RobotModel` : The robot model of the cell."""
+        return self.robot_cell.robot_model
+
+    @property
+    def model(self):
+        """:class:`compas_robots.RobotModel` : Alias of :attr:`robot_model` (v1 name)."""
+        return self.robot_cell.robot_model
+
+    @property
+    def robot_semantics(self):
+        """:class:`compas_fab.robots.RobotSemantics` : The semantics of the cell."""
+        return self.robot_cell.robot_semantics
+
+    @property
+    def semantics(self):
+        """:class:`compas_fab.robots.RobotSemantics` : Alias of :attr:`robot_semantics` (v1 name)."""
+        return self.robot_cell.robot_semantics
+
+    @property
+    def main_group_name(self):
+        return self.robot_cell.main_group_name
+
+    @property
+    def group_names(self):
+        return self.robot_cell.group_names
+
+    def info(self):
+        """Print information about the robot.
+
+        v1's ``Robot.info()`` became ``RobotCell.print_info()`` in 2.x; this
+        keeps the old call site working.
+        """
+        return self.robot_cell.print_info()
+
+    # ----------------------------------------------------------------------
+    # joints and links (v1 Robot delegates, now on RobotCell)
+    # ----------------------------------------------------------------------
+
+    def get_configurable_joints(self, group=None):
+        return self.robot_cell.get_configurable_joints(group)
+
+    def get_configurable_joint_names(self, group=None):
+        return self.robot_cell.get_configurable_joint_names(group)
+
+    def get_configurable_joint_types(self, group=None):
+        return self.robot_cell.get_configurable_joint_types(group)
+
+    def get_link_names(self, group=None):
+        return self.robot_cell.get_link_names(group)
+
+    def get_end_effector_link_name(self, group=None):
+        return self.robot_cell.get_end_effector_link_name(group)
+
+    def get_base_link_name(self, group=None):
+        return self.robot_cell.get_base_link_name(group)
+
+    def get_group_names_from_link_name(self, link_name):
+        """Get the planning groups whose link chain contains ``link_name``.
+
+        v1's ``Robot`` had this; 2.x does not, so it is derived from the
+        semantics here.
+
+        Groups whose link chain cannot be resolved (an end-effector group with
+        no base-to-tip chain, for instance) raise inside ``get_link_names`` and
+        are skipped rather than taking the whole query down.
+        """
+        groups = []
+        for group in self.group_names:
+            try:
+                links = self.robot_cell.get_link_names(group)
+            except Exception:
+                continue
+            if link_name in links:
+                groups.append(group)
+        return groups
+
+    # ----------------------------------------------------------------------
+    # tools
+    # ----------------------------------------------------------------------
+
+    @property
+    def attached_tool(self):
+        """:class:`compas_robots.ToolModel` : Tool attached to the main group, or ``None``."""
+        return self.get_attached_tool()
+
+    def get_attached_tool(self, group=None):
+        group = group or self.main_group_name
+        return self.robot_cell.get_attached_tool(self.robot_cell_state, group)
+
+    def attach_tool(self, tool, group=None, tool_id=None, attachment_frame=None, touch_links=None):
+        """Register a tool in the cell and attach it to a planning group.
+
+        v1 attached a ``Tool`` to the robot directly. In 2.x the tool model
+        belongs to the RobotCell and the attachment is a fact about the
+        RobotCellState, so both are updated here.
+
+        Parameters
+        ----------
+        tool : :class:`compas_robots.ToolModel`
+        group : str, optional
+        tool_id : str, optional
+            Key under which the tool is registered. Defaults to the tool's name.
+        attachment_frame : :class:`compas.geometry.Frame`, optional
+        touch_links : list[str], optional
+            Links allowed to collide with the tool. Defaults to the group's
+            default touch links, which is what keeps the planner from reporting
+            a self-collision the moment a tool is attached.
+
+        Returns
+        -------
+        str
+            The id the tool was registered under.
+        """
+        group = group or self.main_group_name
+        tool_id = tool_id or getattr(tool, "name", None) or "attached_tool"
+
+        self.robot_cell.tool_models[tool_id] = tool
+        if tool_id not in self.robot_cell_state.tool_states:
+            tool_state = ToolState(Frame.worldXY())
+            if tool.get_configurable_joints():
+                tool_state.configuration = tool.zero_configuration()
+            self.robot_cell_state.tool_states[tool_id] = tool_state
+
+        if touch_links is None:
+            touch_links = self.robot_cell.default_touch_links(group)
+
+        self.robot_cell_state.set_tool_attached_to_group(
+            tool_id, group, attachment_frame, touch_links
+        )
+        self.sync_planner()
+        return tool_id
+
+    def detach_tool(self, group=None, tool_id=None, frame=None):
+        """Detach the tool attached to ``group``. Returns its id, or ``None``."""
+        group = group or self.main_group_name
+        tool_id = tool_id or self.robot_cell_state.get_attached_tool_id(group)
+        if tool_id is None:
+            return None
+        self.robot_cell_state.set_tool_detached(tool_id, frame)
+        self.sync_planner()
+        return tool_id
+
+    def from_tcf_to_t0cf(self, frames_tcf, group=None):
+        """Convert TCF frames to the planner coordinate frame (v1 name kept)."""
+        group = group or self.main_group_name
+        tool_id = self.robot_cell_state.get_attached_tool_id(group)
+        if tool_id is None:
+            return list(frames_tcf)
+        return self.robot_cell.from_tcf_to_pcf(self.robot_cell_state, list(frames_tcf), tool_id)
+
+    def from_t0cf_to_tcf(self, frames_t0cf, group=None):
+        """Convert planner coordinate frames to TCF frames (v1 name kept)."""
+        group = group or self.main_group_name
+        tool_id = self.robot_cell_state.get_attached_tool_id(group)
+        if tool_id is None:
+            return list(frames_t0cf)
+        return self.robot_cell.from_pcf_to_tcf(self.robot_cell_state, list(frames_t0cf), tool_id)
+
+    def sync_planner(self):
+        """Re-upload the cell and state to the backend, if a planner is attached.
+
+        Changing the cell (attaching a tool, adding a rigid body) has no effect
+        on planning until the backend is told about it.
+        """
+        if self.planner is not None:
+            self.planner.set_robot_cell(self.robot_cell, self.robot_cell_state)
+
+    def attach_planner(self, client=None, planner=None, robot_cell_state=None):
+        """Attach a planner and upload the cell to the backend.
+
+        A ROS client can be reconnected without reloading the geometry, so this
+        is kept separate from ``__init__``.  Call it whenever ``client`` changes.
+
+        Parameters
+        ----------
+        client : :class:`compas_fab.backends.RosClient`, optional
+            Defaults to the currently assigned client.
+        planner : :class:`compas_fab.backends.PlannerInterface`, optional
+            Defaults to a new ``MoveItPlanner`` on ``client``.
+        robot_cell_state : :class:`compas_fab.robots.RobotCellState`, optional
+            State to upload with the cell.  Defaults to :attr:`robot_cell_state`.
+
+        Returns
+        -------
+        :class:`compas_fab.backends.PlannerInterface`
+        """
+        # Imported here so the module can be used without a backend available.
+        from compas_fab.backends import MoveItPlanner
+
+        self.client = client or self.client
+        if self.client is None:
+            raise ValueError("A client is required to attach a planner.")
+
+        self.planner = planner or MoveItPlanner(self.client)
+        self.planner.set_robot_cell(
+            self.robot_cell, robot_cell_state or self.robot_cell_state
+        )
+        return self.planner
+
+    def _ensure_planner(self):
+        if self.planner is None:
+            raise ValueError(
+                "No planner attached. Call `mobile_robot.attach_planner(ros_client)` first."
+            )
+        return self.planner
+
+    # ==========================================================================
+    # configurations and cell states
+    # ==========================================================================
+
+    def zero_configuration(self, group=None):
+        """Get the zero configuration of a planning group."""
+        return self.robot_cell.zero_configuration(group)
+
+    def zero_full_configuration(self):
+        """Get the zero configuration of all configurable joints of the robot."""
+        return self.robot_cell.zero_full_configuration()
+
+    def full_configuration(self, configuration, full_configuration=None):
+        """Merge a group configuration into a full one.
+
+        Replaces the v1 ``Robot.merge_group_with_full_configuration``.
+
+        Notes
+        -----
+        ``RobotCell.configuration_to_full_configuration`` discards the result of
+        its own ``merged`` call in compas_fab 2.0.1, so the merge is done here.
+        """
+        base = full_configuration or self.robot_cell.zero_full_configuration()
+        base = self.robot_cell.fill_configuration_with_joint_names(base)
+        return base.merged(configuration)
+
+    def group_configuration(self, full_configuration, group=None):
+        """Filter a full configuration down to the joints of a planning group."""
+        group = group or self.main_group_name
+        return self.robot_cell.full_configuration_to_group_configuration(
+            full_configuration, group
+        )
+
+    def cell_state_at(self, configuration=None, group=None):
+        """Get a copy of the cell state with ``configuration`` applied.
+
+        Parameters
+        ----------
+        configuration : :class:`compas_robots.Configuration`, optional
+            A group or full configuration.  A group configuration is merged into
+            the current full configuration.  Defaults to the current state.
+        group : str, optional
+            Unused for now; accepted so callers can be explicit about the group
+            the configuration belongs to.
+
+        Returns
+        -------
+        :class:`compas_fab.robots.RobotCellState`
+        """
+        state = self.robot_cell_state.copy()
+        if configuration is not None:
+            state.robot_configuration = self.full_configuration(
+                configuration, state.robot_configuration
+            )
+        return state
+
+    def display_cell_state(self, configuration=None, group=None):
+        """Get a cell state for *drawing*, with the base placed at the BCF.
+
+        Planning keeps ``robot_base_frame`` at worldXY (see the module
+        docstring), but ``RobotCellObject.update`` positions the robot from that
+        very attribute -- so drawing the planning state would park the mobile
+        base at the world origin.  Use this state for the scene object.
+
+        Returns
+        -------
+        :class:`compas_fab.robots.RobotCellState`
+        """
+        state = self.cell_state_at(configuration, group)
+        state.robot_base_frame = self.BCF
+        return state
+
+    # ==========================================================================
+    # kinematics and planning
+    # ==========================================================================
+
+    def forward_kinematics(
+        self, configuration=None, group=None, target_mode=TargetMode.ROBOT, in_wcf=False
+    ):
+        """Compute forward kinematics from the robot model (no backend needed).
+
+        Replaces the v1 ``Robot.forward_kinematics(..., options={'solver': 'model'})``.
+
+        Parameters
+        ----------
+        configuration : :class:`compas_robots.Configuration`, optional
+            A group or full configuration.
+        group : str, optional
+        target_mode : :class:`compas_fab.robots.TargetMode`, optional
+            ``ROBOT`` for the planner coordinate frame, ``TOOL`` for the TCF of
+            an attached tool.  Defaults to ``ROBOT``.
+        in_wcf : bool, optional
+            ``True`` to return the frame in WCF, ``False`` (default) to return it
+            in the robot's base coordinate frame (BCF), matching v1.
+
+        Returns
+        -------
+        :class:`compas.geometry.Frame`
+        """
+        state = self.cell_state_at(configuration, group)
+        frame_BCF = self.robot_cell.forward_kinematics_target_frame(
+            state, target_mode, group
+        )
+        return self.from_BCF_to_WCF(frame_BCF) if in_wcf else frame_BCF
+
+    def inverse_kinematics(
+        self,
+        frame,
+        start_configuration=None,
+        group=None,
+        target_mode=TargetMode.ROBOT,
+        frame_in_wcf=True,
+        options=None,
+    ):
+        """Compute an inverse kinematics solution via the backend planner.
+
+        Parameters
+        ----------
+        frame : :class:`compas.geometry.Frame`
+            The target frame, in WCF unless ``frame_in_wcf`` is ``False``.
+        start_configuration : :class:`compas_robots.Configuration`, optional
+        group : str, optional
+        target_mode : :class:`compas_fab.robots.TargetMode`, optional
+        frame_in_wcf : bool, optional
+        options : dict, optional
+            Passed through to the planner.
+
+        Returns
+        -------
+        :class:`compas_robots.Configuration`
+        """
+        planner = self._ensure_planner()
+        group = group or self.main_group_name
+
+        frame_BCF = self.from_WCF_to_BCF(frame) if frame_in_wcf else frame
+        target = FrameTarget(frame_BCF, target_mode)
+        start_state = self.cell_state_at(start_configuration, group)
+
+        return planner.inverse_kinematics(target, start_state, group, options)
+
+    def plan_motion_to_configuration(
+        self,
+        target_configuration,
+        start_configuration=None,
+        group=None,
+        tolerance_above=None,
+        tolerance_below=None,
+        options=None,
+    ):
+        """Plan a motion to a joint configuration.
+
+        Replaces the v1 ``constraints_from_configuration`` + ``plan_motion`` pair.
+
+        Returns
+        -------
+        :class:`compas_fab.robots.JointTrajectory`
+        """
+        planner = self._ensure_planner()
+        group = group or self.main_group_name
+
+        target = ConfigurationTarget(
+            target_configuration,
+            tolerance_above=tolerance_above,
+            tolerance_below=tolerance_below,
+        )
+        start_state = self.cell_state_at(start_configuration, group)
+
+        return planner.plan_motion(target, start_state, group, options)
+
+    def plan_motion_to_frame(
+        self,
+        frame,
+        start_configuration=None,
+        group=None,
+        target_mode=TargetMode.ROBOT,
+        frame_in_wcf=True,
+        tolerance_position=None,
+        tolerance_orientation=None,
+        options=None,
+    ):
+        """Plan a motion to a target frame.
+
+        Replaces the v1 ``constraints_from_frame`` + ``plan_motion`` pair.
+
+        Notes
+        -----
+        v1 took three per-axis orientation tolerances; ``FrameTarget`` takes a
+        single ``tolerance_orientation`` applied to all three axes.
+
+        Returns
+        -------
+        :class:`compas_fab.robots.JointTrajectory`
+        """
+        planner = self._ensure_planner()
+        group = group or self.main_group_name
+
+        frame_BCF = self.from_WCF_to_BCF(frame) if frame_in_wcf else frame
+        target = FrameTarget(
+            frame_BCF,
+            target_mode,
+            tolerance_position=tolerance_position,
+            tolerance_orientation=tolerance_orientation,
+        )
+        start_state = self.cell_state_at(start_configuration, group)
+
+        return planner.plan_motion(target, start_state, group, options)
+
+    # ==========================================================================
+    # coordinate frames
+    # ==========================================================================
 
     @property
     def lift_height(self):
@@ -73,21 +541,89 @@ class MobileRobot(Robot):
     def BCF(self, BCF):
         self._BCF = BCF
 
+    #: Link the arm is mounted on, and the frame RCF is expressed relative to.
+    ARM_BASE_LINK = "robot_arm_base"
+    BASE_FOOTPRINT_LINK = "robot_base_footprint"
+
+    def compute_RCF_from_model(self, configuration=None, link_name=None):
+        """Compute the arm base frame from the URDF instead of from TF.
+
+        The TF route needs tf2_web_republisher, which serves the
+        ``/republish_tfs`` service roslibpy's TFClient calls. That is a ROS 1
+        package whose ROS 2 build is a community port, and it is often simply
+        not running -- in which case TF itself is perfectly healthy but
+        ``robot.RCF`` stays None forever.
+
+        None of that is necessary: the robot model already describes where the
+        arm sits, and the lift joint value comes from the joint states we
+        already subscribe to. Forward kinematics to the arm base link gives the
+        same frame, offline and deterministically.
+
+        Parameters
+        ----------
+        configuration : :class:`compas_robots.Configuration`, optional
+            Defaults to the live configuration from ``mobile_client`` if one is
+            connected, otherwise the cell state's configuration.
+        link_name : str, optional
+            Defaults to :attr:`ARM_BASE_LINK`.
+
+        Returns
+        -------
+        :class:`compas.geometry.Frame` or None
+            The arm base relative to the robot model's root link, or None if
+            the link does not exist in the model.
+
+        Notes
+        -----
+        The returned frame already accounts for the lift, because the lift
+        joint is part of the configuration. Leave :attr:`lift_height` at 0 when
+        using this, or the lift is counted twice.
+        """
+        link_name = link_name or self.ARM_BASE_LINK
+        if self.robot_cell.robot_model.get_link_by_name(link_name) is None:
+            return None
+
+        if configuration is None and self.mobile_client is not None:
+            try:
+                configuration = self.mobile_client.get_current_configuration()
+            except Exception:
+                configuration = None
+
+        full = self.full_configuration(
+            configuration, self.robot_cell_state.robot_configuration
+        ) if configuration is not None else self.robot_cell_state.robot_configuration
+
+        return self.robot_cell.robot_model.forward_kinematics(full, link_name)
+
     @property
     def RCF(self):
-        if self.mobile_client is not None:
-            if self._RCF is None:
-                self.mobile_client.tf_subscribe(
-                    "robot_arm_base",
-                    "robot_base_footprint",
-                    self._receive_base_frame_callback,
-                    timeout=5,
-                )
-            if self.lift_height != 0:
-                self._RCF_lift = self._RCF.copy()
-                self._RCF_lift.point.z += self.lift_height
-            else:
-                self._RCF_lift = self._RCF
+        """The arm base frame, in the robot's base coordinate frame (BCF).
+
+        Tries TF first (needs tf2_web_republisher), then falls back to the
+        robot model, which always works. See :meth:`compute_RCF_from_model`.
+        """
+        if self._RCF is None and self.mobile_client is not None:
+            self.mobile_client.tf_subscribe(
+                self.ARM_BASE_LINK,
+                self.BASE_FOOTPRINT_LINK,
+                self._receive_base_frame_callback,
+                timeout=5,
+            )
+
+        if self._RCF is None:
+            self._RCF = self.compute_RCF_from_model()
+
+        if self._RCF is None:
+            # Previously this fell through to `self._RCF.copy()` below and
+            # raised AttributeError on None, which read as a compas bug rather
+            # than a missing transform.
+            return None
+
+        if self.lift_height:
+            self._RCF_lift = self._RCF.copy()
+            self._RCF_lift.point.z += self.lift_height
+        else:
+            self._RCF_lift = self._RCF
         return self._RCF_lift
 
     def _receive_base_frame_callback(self, message):
@@ -104,14 +640,6 @@ class MobileRobot(Robot):
         )
         pose_frame = Frame.from_quaternion(pose_quaternion, pose_point)
         self._RCF = pose_frame
-
-        # if self._RCF == None:
-        #     robot_arm_base_link = self.forward_kinematics(self.zero_configuration(), 'ur10e', True, options={'link':'robot_arm_base_link'})
-        #     self._RCF = Frame(robot_arm_base_link.point, -robot_arm_base_link.xaxis, -robot_arm_base_link.yaxis)
-        # if self.wheel_type == 'outdoor':
-        #     self._RCF = Frame(Point(0.275, 0.0, 1.049 + self.lift_height), Vector(-0.707, 0.707, 0.0), Vector(-0.707, -0.707, 0.0))
-        # elif self.wheel_type == 'indoor':
-        # self._RCF = Frame(Point(0.275, 0.0, 1.021 + self.lift_height), Vector(-0.707, 0.707, 0.0), Vector(-0.707, -0.707, 0.0))
         return self._RCF
 
     @property

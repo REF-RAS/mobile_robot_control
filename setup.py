@@ -10,7 +10,11 @@ from os.path import abspath, basename, dirname, join, splitext
 from setuptools import find_packages, setup
 
 # NOTE: Write dependencies (i.e. http://python-packaging.readthedocs.io/en/latest/dependencies.html)
-requirements = []
+requirements = [
+    'compas>=2.15.1',
+    'compas_robots>=1.0.1',
+    'compas_fab>=2.0.1',
+]
 # NOTE: Write a list of keywords (i.e. ['ros', 'ros-bridge', 'robotics', 'websockets'])
 keywords_list = []
 

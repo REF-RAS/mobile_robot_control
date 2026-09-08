@@ -1,3 +1,15 @@
+"""Fabrication tasks for the mobile robot.
+
+COMPAS FAB v2.0.1
+
+Planning moved off the robot and onto a planner in compas_fab 2.x. The goal
+constraints these tasks used to build by hand (``constraints_from_configuration``
+/ ``constraints_from_frame``) are now ``Target`` objects, and the call goes
+through ``MobileRobot.plan_motion_to_*``, which wraps
+``MoveItPlanner.plan_motion``. The ``robot`` passed to these tasks must
+therefore have a planner attached -- see ``MobileRobot.attach_planner``.
+"""
+
 from fabrication_manager.task import Task
 
 from ur_fabrication_control.direct_control.fabrication import URTask
@@ -10,6 +22,33 @@ import json
 
 import time
 import math
+
+# Joint order the Vogui expects in the UR script and on the lift controller.
+MOBILE_ROBOT_JOINT_NAMES = [
+    "robot_ewellix_lift_top_joint",
+    "robot_arm_shoulder_pan_joint",
+    "robot_arm_shoulder_lift_joint",
+    "robot_arm_elbow_joint",
+    "robot_arm_wrist_1_joint",
+    "robot_arm_wrist_2_joint",
+    "robot_arm_wrist_3_joint",
+]
+
+
+def _reorder_configuration(robot, trajectory_point, trajectory, group):
+    """Expand a group trajectory point to the mobile robot's joint order."""
+    config = robot.full_configuration(trajectory_point, trajectory.start_configuration)
+    joint_values_ordered = [
+        config.joint_values[config.joint_names.index(joint_name)]
+        for joint_name in MOBILE_ROBOT_JOINT_NAMES
+    ]
+    joint_types_ordered = [
+        config.joint_types[config.joint_names.index(joint_name)]
+        for joint_name in MOBILE_ROBOT_JOINT_NAMES
+    ]
+    return Configuration(
+        joint_values_ordered, joint_types_ordered, MOBILE_ROBOT_JOINT_NAMES
+    )
 
 __all__ = [
     "MoveJointsTask",
@@ -35,7 +74,6 @@ class MotionPlanConfigurationTask(Task):
         group="ur20",
         tolerance_above=[math.radians(1)] * 6,
         tolerance_below=[math.radians(1)] * 6,
-        attached_collision_meshes=None,
         path_constraints=None,
         planner_id="RRTConnect",
         validation=True,
@@ -51,7 +89,6 @@ class MotionPlanConfigurationTask(Task):
         self.tolerance_below = tolerance_below
 
         self.path_constraints = path_constraints
-        self.attached_collision_meshes = attached_collision_meshes
         self.planner_id = planner_id
 
         self.trajectory = None
@@ -68,8 +105,6 @@ class MotionPlanConfigurationTask(Task):
         self.approved = False
 
     def run(self, stop_thread):
-        goal_constraints = self.robot.constraints_from_configuration(self.target_configuration, self.tolerance_above, self.tolerance_below, self.group)
-
         self.log("Planning trajectory...")
 
         while not stop_thread():
@@ -84,12 +119,13 @@ class MotionPlanConfigurationTask(Task):
                 "accelerations": [],
                 }
 
-            self.trajectory = self.robot.plan_motion(
-                goal_constraints,
+            self.trajectory = self.robot.plan_motion_to_configuration(
+                self.target_configuration,
                 start_configuration=self.start_configuration,
                 group=self.group,
+                tolerance_above=self.tolerance_above,
+                tolerance_below=self.tolerance_below,
                 options=dict(
-                    attached_collision_meshes=self.attached_collision_meshes,
                     path_constraints=self.path_constraints,
                     planner_id=self.planner_id,
                 ),
@@ -103,38 +139,13 @@ class MotionPlanConfigurationTask(Task):
             self.log("Trajectory found at {}.".format(self.trajectory))
 
             for c in self.trajectory.points:
-                config = self.robot.merge_group_with_full_configuration(
-                    c, self.trajectory.start_configuration, self.group
+                self.results["configurations"].append(
+                    _reorder_configuration(self.robot, c, self.trajectory, self.group)
                 )
-                joint_names_ordered = [
-                    "robot_ewellix_lift_top_joint",
-                    "robot_arm_shoulder_pan_joint",
-                    "robot_arm_shoulder_lift_joint",
-                    "robot_arm_elbow_joint",
-                    "robot_arm_wrist_1_joint",
-                    "robot_arm_wrist_2_joint",
-                    "robot_arm_wrist_3_joint",
-                ]
-                joint_values_ordered = [
-                    config.joint_values[config.joint_names.index(joint_name)]
-                    for joint_name in joint_names_ordered
-                ]
-                joint_types_ordered = [
-                    config.joint_types[config.joint_names.index(joint_name)]
-                    for joint_name in joint_names_ordered
-                ]
-                mobile_robot_config = Configuration(
-                    joint_values_ordered, joint_types_ordered, joint_names_ordered
-                )
-                self.results["configurations"].append(mobile_robot_config)
 
-                frame_t = self.robot.forward_kinematics(
-                    c, self.group, options=dict(solver="model")
-                )
+                frame_t = self.robot.forward_kinematics(c, self.group)
                 self.results["planes"].append(
-                    frame_to_rhino_plane(
-                        frame_t.transformed(self.robot.transformation_BCF_WCF())
-                    )
+                    frame_to_rhino_plane(self.robot.from_BCF_to_WCF(frame_t))
                 )
                 self.results["positions"].append(c.positions)
                 self.results["velocities"].append(c.velocities)
@@ -164,10 +175,7 @@ class MotionPlanFrameTask(Task):
         start_configuration,
         group="ur20",
         tolerance_position=0.001,
-        tolerance_xaxis=1.0,
-        tolerance_yaxis=1.0,
-        tolerance_zaxis=1.0,
-        attached_collision_meshes=None,
+        tolerance_orientation=1.0,
         path_constraints=None,
         planner_id="RRTConnect",
         validation=True,
@@ -180,14 +188,11 @@ class MotionPlanFrameTask(Task):
         self.start_configuration = start_configuration
 
         self.tolerance_position = tolerance_position
-        self.tolerances_axes = [
-                math.radians(tolerance_xaxis),
-                math.radians(tolerance_yaxis),
-                math.radians(tolerance_zaxis),
-            ]
+        # v1 took one tolerance per axis; FrameTarget takes a single orientation
+        # tolerance that the planner applies to all three axes.
+        self.tolerance_orientation = math.radians(tolerance_orientation)
 
         self.path_constraints = path_constraints
-        self.attached_collision_meshes = attached_collision_meshes
         self.planner_id = planner_id
 
         self.trajectory = None
@@ -204,16 +209,8 @@ class MotionPlanFrameTask(Task):
         self.approved = False
 
     def run(self, stop_thread):
-        
-        frame_BCF = self.robot.from_WCF_to_BCF(self.frame_WCF)
-        goal_constraints = self.robot.constraints_from_frame(
-            frame_BCF, 
-            self.tolerance_position, 
-            self.tolerances_axes, 
-            self.group)
-
         self.log("Planning trajectory...")
-        
+
         while not stop_thread():
             # Clean trajectory.
             self.replan = False
@@ -226,12 +223,14 @@ class MotionPlanFrameTask(Task):
                 "accelerations": [],
                 }
 
-            self.trajectory = self.robot.plan_motion(
-                goal_constraints,
+            # The WCF -> BCF conversion happens inside plan_motion_to_frame.
+            self.trajectory = self.robot.plan_motion_to_frame(
+                self.frame_WCF,
                 start_configuration=self.start_configuration,
                 group=self.group,
+                tolerance_position=self.tolerance_position,
+                tolerance_orientation=self.tolerance_orientation,
                 options=dict(
-                    attached_collision_meshes=self.attached_collision_meshes,
                     path_constraints=self.path_constraints,
                     planner_id=self.planner_id,
                 ),
@@ -245,38 +244,13 @@ class MotionPlanFrameTask(Task):
             self.log("Trajectory found at {}.".format(self.trajectory))
 
             for c in self.trajectory.points:
-                config = self.robot.merge_group_with_full_configuration(
-                    c, self.trajectory.start_configuration, self.group
+                self.results["configurations"].append(
+                    _reorder_configuration(self.robot, c, self.trajectory, self.group)
                 )
-                joint_names_ordered = [
-                    "robot_ewellix_lift_top_joint",
-                    "robot_arm_shoulder_pan_joint",
-                    "robot_arm_shoulder_lift_joint",
-                    "robot_arm_elbow_joint",
-                    "robot_arm_wrist_1_joint",
-                    "robot_arm_wrist_2_joint",
-                    "robot_arm_wrist_3_joint",
-                ]
-                joint_values_ordered = [
-                    config.joint_values[config.joint_names.index(joint_name)]
-                    for joint_name in joint_names_ordered
-                ]
-                joint_types_ordered = [
-                    config.joint_types[config.joint_names.index(joint_name)]
-                    for joint_name in joint_names_ordered
-                ]
-                mobile_robot_config = Configuration(
-                    joint_values_ordered, joint_types_ordered, joint_names_ordered
-                )
-                self.results["configurations"].append(mobile_robot_config)
 
-                frame_t = self.robot.forward_kinematics(
-                    c, self.group, options=dict(solver="model")
-                )
+                frame_t = self.robot.forward_kinematics(c, self.group)
                 self.results["planes"].append(
-                    frame_to_rhino_plane(
-                        self.robot.from_BCF_to_WCF(frame_t)
-                    )
+                    frame_to_rhino_plane(self.robot.from_BCF_to_WCF(frame_t))
                 )
                 self.results["positions"].append(c.positions)
                 self.results["velocities"].append(c.velocities)
@@ -317,11 +291,10 @@ class InverseKinematicsTask(Task):
         self.path = json_path
 
     def run(self, stop_thread):
-        frame_BCF = self.frame_WCF.transformed(self.robot.transformation_WCF_BCF())
-
         self.log("Computing inverse kinematics...")
+        # The WCF -> BCF conversion happens inside MobileRobot.inverse_kinematics.
         self.configuration = self.robot.inverse_kinematics(
-            frame_BCF, self.start_configuration, self.group
+            self.frame_WCF, self.start_configuration, self.group
         )
 
         while not stop_thread():
@@ -332,7 +305,8 @@ class InverseKinematicsTask(Task):
         self.log("Configuration found at {}.".format(self.configuration))
         filename = "Task_{}.json".format(self.key)
         filepath = self.path / filename
-        json_data = json.dumps(self.configuration.to_data())
+        # compas 2.x: Data.to_data() was replaced by the __data__ property.
+        json_data = json.dumps(self.configuration.__data__)
 
         with open(filepath, "w") as f:
             f.write(json_data)
@@ -350,21 +324,16 @@ class GetConfigurationTask(Task):
         self.log("Waiting for current configuration...")
         current_joint_values = self.robot.mobile_client.current_joint_values
 
-        joint_names_ordered = [
-            "robot_ewellix_top_lift_joint",
-            "robot_arm_shoulder_pan_joint",
-            "robot_arm_shoulder_lift_joint",
-            "robot_arm_elbow_joint",
-            "robot_arm_wrist_1_joint",
-            "robot_arm_wrist_2_joint",
-            "robot_arm_wrist_3_joint",
-        ]
+        # NOTE: this used to spell the lift joint "robot_ewellix_top_lift_joint",
+        # which never matched the joint state and so always read back as 0.0.
         joint_values_ordered = [
             current_joint_values.get(joint_name, 0.00000)
-            for joint_name in joint_names_ordered
+            for joint_name in MOBILE_ROBOT_JOINT_NAMES
         ]
         joint_types_ordered = [2, 0, 0, 0, 0, 0, 0]
-        self.configuration = Configuration(joint_values_ordered, joint_types_ordered)
+        self.configuration = Configuration(
+            joint_values_ordered, joint_types_ordered, MOBILE_ROBOT_JOINT_NAMES
+        )
 
         self.log("Current configuration is: {}".format(self.configuration))
 
