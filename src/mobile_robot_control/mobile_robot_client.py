@@ -265,17 +265,82 @@ class MobileRobotClient(object):
         for key, joint_name in enumerate(message.get("name")):
             self.current_joint_values[joint_name] = message.get("position")[key]
 
-    def joint_states_subscribe(self):
-        self.topic_subscribe(
-            "/robot/arm/joint_states", "sensor_msgs/JointState", self._receive_joint_states
-        )
-        self.topic_subscribe(
-            "/robot/lift/joint_states", "sensor_msgs/JointState", self._receive_joint_states
-        )
+    #: Topics carrying joint states.
+    #:
+    #: The ROS 2 bringup aggregates every joint onto one topic. The per-controller
+    #: topics this used to subscribe to -- /robot/arm/joint_states and
+    #: /robot/lift/joint_states -- do not exist on that stack; what is there is
+    #: named /robot/arm/arm_joint_states_unused and
+    #: /robot/lift/lift_joint_states_unused, i.e. deliberately remapped aside.
+    #: Subscribing to a non-existent topic does not raise, so this read back as
+    #: an arm parked at its zero pose.
+    JOINT_STATE_TOPICS = ["/robot/joint_states"]
 
-    def joint_states_unsubscribe(self):
-        self.topic_unsubscribe("/robot/arm/joint_states")
-        self.topic_unsubscribe("/robot/lift/joint_states")
+    #: Base velocity. The controller also advertises a plain 'cmd_vel', which on
+    #: this stack carries geometry_msgs/TwistStamped -- the '_unstamped' variant
+    #: matches the bare linear/angular message this class builds. Check with
+    #: `ros2 topic info /robot/robotnik_base_control/cmd_vel` and swap if needed.
+    CMD_VEL_TOPIC = "/robot/robotnik_base_control/cmd_vel_unstamped"
+
+    #: Arm and lift are both joint trajectory controllers in ROS 2. The ROS 1
+    #: names ('scaled_pos_traj_controller/command', and a Float64 position
+    #: command for the lift) do not exist on this robot.
+    ARM_TRAJECTORY_TOPIC = "/robot/arm/scaled_joint_trajectory_controller/joint_trajectory"
+    LIFT_TRAJECTORY_TOPIC = "/robot/lift/lift_joint_trajectory_controller/joint_trajectory"
+
+    ARM_JOINT_NAMES = [
+        "robot_arm_shoulder_pan_joint",
+        "robot_arm_shoulder_lift_joint",
+        "robot_arm_elbow_joint",
+        "robot_arm_wrist_1_joint",
+        "robot_arm_wrist_2_joint",
+        "robot_arm_wrist_3_joint",
+    ]
+    LIFT_JOINT_NAME = "robot_ewellix_lift_top_joint"
+
+    def ros_message_type(self, package, name):
+        """Build a message type name for the connected ROS version.
+
+        ROS 2 rosbridge wants the three-part form 'sensor_msgs/msg/JointState';
+        ROS 1 wants 'sensor_msgs/JointState'. Getting it wrong does not raise:
+        a subscription simply never receives, and a publication never arrives.
+        That silence is what made the arm read back as parked at zero, so the
+        name is derived from the detected distro rather than hard-coded.
+        """
+        try:
+            if self.ros_client.ros_distro.is_ros2:
+                return "{}/msg/{}".format(package, name)
+        except Exception:
+            pass
+        return "{}/{}".format(package, name)
+
+    def joint_state_message_type(self):
+        """The JointState type name this ROS version expects."""
+        return self.ros_message_type("sensor_msgs", "JointState")
+
+    def joint_states_subscribe(self, topics=None, message_type=None):
+        """Subscribe to the joint state topics.
+
+        Parameters
+        ----------
+        topics : list[str], optional
+            Defaults to :attr:`JOINT_STATE_TOPICS`.
+        message_type : str, optional
+            Defaults to :meth:`joint_state_message_type`.
+        """
+        topics = topics or self.JOINT_STATE_TOPICS
+        message_type = message_type or self.joint_state_message_type()
+        for topic in topics:
+            self.topic_subscribe(topic, message_type, self._receive_joint_states)
+        return message_type
+
+    def joint_states_unsubscribe(self, topics=None):
+        for topic in topics or self.JOINT_STATE_TOPICS:
+            self.topic_unsubscribe(topic)
+
+    def joint_states_received(self):
+        """How many joint values have arrived so far. 0 means nothing is coming."""
+        return len(self.current_joint_values)
 
     def get_current_configuration(self):
         joint_names_ordered = [
@@ -312,7 +377,7 @@ class MobileRobotClient(object):
         print(list_controllers_service.call(request))
 
     def move_forward(self, vel=0.01, dist=0.1):
-        move_base = self.topic_publish("/robot/cmd_vel", "geometry_msgs/Twist")
+        move_base = self.topic_publish(self.CMD_VEL_TOPIC, self.ros_message_type("geometry_msgs", "Twist"))
         self.cmd_vel.linear.x = vel * (dist / abs(dist))
         t0 = time.time()
         while abs(dist) > (time.time() - t0) * vel:
@@ -327,7 +392,7 @@ class MobileRobotClient(object):
         self.move_forward(vel=vel, dist=-dist)
 
     def move_radial(self, deg=90, vel=0.1, dist=0.1):
-        move_base = self.topic_publish("/robot/cmd_vel", "geometry_msgs/Twist")
+        move_base = self.topic_publish(self.CMD_VEL_TOPIC, self.ros_message_type("geometry_msgs", "Twist"))
         x_vel = math.cos(math.radians(deg)) * vel
         y_vel = math.sin(math.radians(deg)) * vel
         self.cmd_vel.linear.x = x_vel
@@ -351,8 +416,8 @@ class MobileRobotClient(object):
     ):
         joint_state_publisher = Topic(
             self.ros_client,
-            "/robot/arm/scaled_pos_traj_controller/command",
-            "trajectory_msgs/JointTrajectory",
+            self.ARM_TRAJECTORY_TOPIC,
+            self.ros_message_type("trajectory_msgs", "JointTrajectory"),
         )
         joint_state_publisher.advertise()
         treq = [pos / vel for pos, vel in zip(configuration.joint_values, max_velocity)]
@@ -387,14 +452,7 @@ class MobileRobotClient(object):
         )
         jt = JointTrajectory(
             header=Header(stamp=rostime, frame_id=""),
-            joint_names=[
-                "robot_arm_shoulder_pan_joint",
-                "robot_arm_shoulder_lift_joint",
-                "robot_arm_elbow_joint",
-                "robot_arm_wrist_1_joint",
-                "robot_arm_wrist_2_joint",
-                "robot_arm_wrist_3_joint",
-            ],
+            joint_names=list(self.ARM_JOINT_NAMES),
             points=[jtp0, jtp, jtp1],
         )
         # print(jtp.msg)
@@ -411,20 +469,54 @@ class MobileRobotClient(object):
             time.sleep(0.01)
         joint_state_publisher.unadvertise()
 
-    def set_lift_height(self, height):
-        self.topic_publish(
-            "/robot/lift_joint_position_controller/command", "std_msgs/Float64"
+    def set_lift_height(self, height, duration=5.0):
+        """Command the lift to ``height`` metres.
+
+        In ROS 1 this published a std_msgs/Float64 position to
+        /robot/lift_joint_position_controller/command. That controller does not
+        exist on the ROS 2 stack: the lift is driven by a joint trajectory
+        controller, so the command is a single-point JointTrajectory instead.
+
+        Parameters
+        ----------
+        height : float
+            Target lift position, in metres.
+        duration : float, optional
+            Seconds allowed to reach it. Too short and the controller will
+            reject the trajectory as infeasible.
+        """
+        topic = Topic(
+            self.ros_client,
+            self.LIFT_TRAJECTORY_TOPIC,
+            self.ros_message_type("trajectory_msgs", "JointTrajectory"),
         )
-        self.get_topic("/robot/lift_joint_position_controller/command").publish(
-            Message({"data": height})
-        )
+        topic.advertise()
+
+        secs = int(duration)
+        message = {
+            "header": {"frame_id": ""},
+            "joint_names": [self.LIFT_JOINT_NAME],
+            "points": [
+                {
+                    "positions": [float(height)],
+                    "velocities": [0.0],
+                    "accelerations": [0.0],
+                    "time_from_start": {
+                        "sec": secs,
+                        "nanosec": int((duration - secs) * 1e9),
+                    },
+                }
+            ],
+        }
+        topic.publish(Message(message))
+
         t0 = time.time()
-        while time.time() - t0 < 5:
+        while time.time() - t0 < duration:
             time.sleep(0.1)
-        self.topic_unpublish("/robot/lift_joint_position_controller/command")
+        topic.unadvertise()
 
     def rotate_in_place(self, rad=(math.pi / 2), vel=0.01):
-        move_base = self.topic_publish("/robot/cmd_vel", "geometry_msgs/Twist")
+        move_base = self.topic_publish(self.CMD_VEL_TOPIC, self.ros_message_type("geometry_msgs", "Twist"))
         self.cmd_vel.angular.z = vel
         t0 = time.time()
         while abs(rad) > (time.time() - t0) * abs(vel):
@@ -439,7 +531,7 @@ class MobileRobotClient(object):
 
     def stop_robot(self):
         self.cmd_vel_clear()
-        move_base = self.topic_publish("/robot/cmd_vel", "geometry_msgs/Twist")
+        move_base = self.topic_publish(self.CMD_VEL_TOPIC, self.ros_message_type("geometry_msgs", "Twist"))
         move_base.publish(Message(self.cmd_vel))
         move_base.unadvertise()
 
