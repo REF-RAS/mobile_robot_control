@@ -54,6 +54,7 @@ scriptcontext.doc = ghdoc  # noqa: F821
 key = "robot_AB"
 planner_key = key + "_planner"
 status_key = key + "_status"
+mobile_client_key = key + "_mobile_client"
 
 prefix = prefix or ""  # noqa: F821
 file_server = file_server or None  # noqa: F821
@@ -172,7 +173,20 @@ mobile_robot = st.get(key, None)
 planner_note = "no planner (needs a connected client)"
 if mobile_robot and ros_client and ros_client.is_connected:  # noqa: F821
     mobile_robot.client = ros_client  # noqa: F821
-    mobile_robot.mobile_client = MobileRobotClient(ros_client)  # noqa: F821
+
+    # CACHED, not rebuilt. A MobileRobotClient holds the live topic
+    # subscriptions and the accumulated current_joint_values. Constructing a
+    # fresh one each solve threw both away: joint states filled up in one
+    # instance and get_current_configuration() was then called on the next,
+    # empty one, so the arm always read back as all zeros. With a recompute
+    # timer running, the client was replaced faster than any value could be
+    # read. The orphaned instances also kept their subscriptions alive,
+    # leaking one more on every solve.
+    mobile_client = st.get(mobile_client_key)
+    if mobile_client is None or mobile_client.ros_client is not ros_client:  # noqa: F821
+        mobile_client = MobileRobotClient(ros_client)  # noqa: F821
+        st[mobile_client_key] = mobile_client
+    mobile_robot.mobile_client = mobile_client
 
     planner = st.get(planner_key)
     if planner is not None and planner.client is not ros_client:  # noqa: F821
@@ -210,6 +224,21 @@ print("%s" % planner_note)
 if mobile_robot:
     tools = ", ".join(mobile_robot.robot_cell.tool_ids) or "none"
     print("tools attached : %s" % tools)
+
+    mc = mobile_robot.mobile_client
+    if mc is None:
+        print("joint states   : no mobile_client")
+    else:
+        values = mc.current_joint_values
+        subscribed = [t for t in mc.topics if "joint_state" in t]
+        if values:
+            print("joint states   : %d joints held, e.g. %s"
+                  % (len(values), ", ".join(sorted(values)[:3])))
+        elif subscribed:
+            print("joint states   : subscribed to %s but NOTHING received yet"
+                  % ", ".join(subscribed))
+        else:
+            print("joint states   : not subscribed (press subscribe on `get joint states`)")
 
 # --------------------------------------------------------------------------
 # Outputs
