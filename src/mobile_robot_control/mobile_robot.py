@@ -362,6 +362,53 @@ class MobileRobot(object):
             )
         return state
 
+    def base_frame_for_link_at(self, frame, link_name, configuration=None):
+        """Get the BCF that puts ``link_name`` on ``frame``.
+
+        ``robot_base_frame`` positions the model's *root* link, so the robot is
+        anchored wherever the URDF happens to root itself -- which is not
+        necessarily the point you want to drive the mobile base from. This
+        solves for the root placement that lands ``link_name`` on ``frame``
+        instead.
+
+        Parameters
+        ----------
+        frame : :class:`compas.geometry.Frame`
+            Where ``link_name`` should end up, in WCF.
+        link_name : str
+            The link to anchor on, e.g. ``'robot_base_footprint'``.
+        configuration : :class:`compas_robots.Configuration`, optional
+            Joint values used for the internal FK. Only matters when the link
+            sits beyond a movable joint (the lift, for instance).
+
+        Returns
+        -------
+        :class:`compas.geometry.Frame`
+            Assign to :attr:`BCF`.
+
+        Raises
+        ------
+        ValueError
+            If the link is not in the model.
+        """
+        model = self.robot_cell.robot_model
+        if model.get_link_by_name(link_name) is None:
+            raise ValueError(
+                "No link %r in the model. Root is %r." % (link_name, self.robot_cell.root_name)
+            )
+
+        state = self.cell_state_at(configuration)
+        t_root_link = Transformation.from_frame(
+            model.forward_kinematics(state.robot_configuration, link_name)
+        )
+        t_world_link = Transformation.from_frame(frame)
+        return Frame.from_transformation(t_world_link * t_root_link.inverted())
+
+    def anchor_base_on_link(self, frame, link_name, configuration=None):
+        """Set :attr:`BCF` so ``link_name`` lands on ``frame``. Returns the BCF."""
+        self.BCF = self.base_frame_for_link_at(frame, link_name, configuration)
+        return self.BCF
+
     def display_cell_state(self, configuration=None, group=None):
         """Get a cell state for *drawing*, with the base placed at the BCF.
 

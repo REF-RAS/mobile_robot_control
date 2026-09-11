@@ -36,7 +36,13 @@ if not robot:  # noqa: F821
 
 elif set_frame_to == "set_to_BCF":  # noqa: F821
     if target_BCF:  # noqa: F821
-        BCF = plane_to_compas_frame(target_BCF)  # noqa: F821
+        # Anchor on the ground footprint, not the URDF root. robot_base_frame
+        # positions whichever link the URDF roots itself at, which on this
+        # robot is up at arm-mount height -- so setting it directly put the
+        # UR20 base on the target plane and left the wheels below z=0.
+        BCF = robot.base_frame_for_link_at(  # noqa: F821
+            plane_to_compas_frame(target_BCF), "robot_base_footprint"  # noqa: F821
+        )
     else:
         print("set_to_BCF selected but target_BCF is empty.")
 
