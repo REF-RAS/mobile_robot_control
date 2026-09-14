@@ -51,6 +51,26 @@ it works either way. Checked the rest: `Visualise.bang` is the only other
 list-access input among the ported components, and nothing reads it.
 
 
+## A Configuration is iterable, and yields joint names
+
+`compas_robots.Configuration` implements `__iter__`, `__len__` and
+`__getitem__`, iterating over its **joint names**:
+
+```python
+list(configuration)
+# ['robot_lift_lower_joint', 'robot_arm_shoulder_pan_joint', ...]
+```
+
+So any Grasshopper component that calls `list()` on one silently turns a
+configuration into a list of strings. Index into that and you get a joint name
+where a configuration was expected -- clamped to the end of a full 15-joint
+state it surfaces as `robot_front_right_wheel_joint`, which reads like a
+naming bug somewhere else entirely.
+
+It also means an input with **Item** access on `trajectory visualize`'s
+`configurations` output receives one Configuration at a time and may expand
+each. Use **List** access on anything consuming that output.
+
 ## Contract changes worth knowing
 
 **`constraints from plane` -> `frame target`.** v1 emitted a list of

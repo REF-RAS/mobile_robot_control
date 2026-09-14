@@ -53,3 +53,24 @@ if robot and trajectory:  # noqa: F821
 P = list_to_ghtree(list(zip(*positions)))
 V = list_to_ghtree(list(zip(*velocities)))
 A = list_to_ghtree(list(zip(*accelerations)))
+
+# Report, so `out` is not blank when something downstream misbehaves.
+if not robot:  # noqa: F821
+    print("No robot wired.")
+elif not trajectory:  # noqa: F821
+    print("No trajectory wired -- has plan motion produced one?")
+else:
+    print("%d configurations, %d planes" % (len(configurations), len(planes)))
+    print("group    : %s" % group)
+    print("duration : %.2fs   fraction: %s" % (time, fraction))
+    if configurations:
+        first = configurations[0]
+        print("each configuration has %d joints:" % len(first.joint_names))
+        print("   %s" % ", ".join(first.joint_names))
+        # Configuration is iterable over joint NAMES, so any downstream
+        # component that calls list() on one turns it into strings. Anything
+        # consuming `configurations` must take the list, not each item.
+        print("")
+        print("NOTE: a Configuration iterates as joint names, so a downstream")
+        print("      component with Item access on this output will expand one")
+        print("      into strings rather than treating it as a single object.")
