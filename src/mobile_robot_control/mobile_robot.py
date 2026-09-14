@@ -339,6 +339,31 @@ class MobileRobot(object):
             full_configuration, group
         )
 
+    def current_configuration(self, require_live=True):
+        """The robot's *measured* configuration, from joint states.
+
+        ``MobileRobotClient.get_current_configuration()`` substitutes 0.0 for
+        every joint it has not heard about, so with no subscription it returns
+        a perfectly valid-looking configuration of all zeros. Planning from
+        that is worse than not planning: the trajectory is computed from a pose
+        the robot is not in, and the first move jumps.
+
+        Parameters
+        ----------
+        require_live : bool, optional
+            ``True`` (default) returns ``None`` unless joint states have
+            actually arrived. ``False`` gives the raw call, zeros and all.
+
+        Returns
+        -------
+        :class:`compas_robots.Configuration` or None
+        """
+        if self.mobile_client is None:
+            return None
+        if require_live and not self.mobile_client.current_joint_values:
+            return None
+        return self.mobile_client.get_current_configuration()
+
     def cell_state_at(self, configuration=None, group=None):
         """Get a copy of the cell state with ``configuration`` applied.
 
