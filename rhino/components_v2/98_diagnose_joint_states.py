@@ -108,12 +108,12 @@ if run:  # noqa: F821
                 all_names.extend(names)
             joint_names = sorted(set(all_names))
 
-            wanted = [
-                "robot_ewellix_lift_top_joint",
-                "robot_arm_shoulder_pan_joint", "robot_arm_shoulder_lift_joint",
-                "robot_arm_elbow_joint", "robot_arm_wrist_1_joint",
-                "robot_arm_wrist_2_joint", "robot_arm_wrist_3_joint",
-            ]
+            # Ask the client what it will look for, rather than repeating a
+            # list here that can drift out of date the way the old lift joint
+            # name did.
+            from mobile_robot_control.mobile_robot_client import MobileRobotClient
+            wanted = (list(MobileRobotClient.LIFT_JOINT_NAMES)
+                      + list(MobileRobotClient.ARM_JOINT_NAMES))
             log("\njoints get_current_configuration() asks for:")
             for name in wanted:
                 log("    %-34s %s" % (name, "FOUND" if name in joint_names else "MISSING"))

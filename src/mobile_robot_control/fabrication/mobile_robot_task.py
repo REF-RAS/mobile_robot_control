@@ -24,15 +24,17 @@ import time
 import math
 
 # Joint order the Vogui expects in the UR script and on the lift controller.
-MOBILE_ROBOT_JOINT_NAMES = [
-    "robot_ewellix_lift_top_joint",
-    "robot_arm_shoulder_pan_joint",
-    "robot_arm_shoulder_lift_joint",
-    "robot_arm_elbow_joint",
-    "robot_arm_wrist_1_joint",
-    "robot_arm_wrist_2_joint",
-    "robot_arm_wrist_3_joint",
-]
+#
+# Sourced from MobileRobotClient so there is one definition of these names. The
+# lift joint was 'robot_ewellix_lift_top_joint' under robotnik_description; the
+# robot now uses ewellix_description, where the lift is two joints with
+# different names. A stale name here does not merely fail -- if it reaches
+# MoveIt's /apply_planning_scene it aborts move_group.
+from mobile_robot_control.mobile_robot_client import MobileRobotClient  # noqa: E402
+
+MOBILE_ROBOT_JOINT_NAMES = (
+    list(MobileRobotClient.LIFT_JOINT_NAMES) + list(MobileRobotClient.ARM_JOINT_NAMES)
+)
 
 
 def _reorder_configuration(robot, trajectory_point, trajectory, group):

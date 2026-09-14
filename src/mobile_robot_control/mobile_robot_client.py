@@ -296,7 +296,14 @@ class MobileRobotClient(object):
         "robot_arm_wrist_2_joint",
         "robot_arm_wrist_3_joint",
     ]
-    LIFT_JOINT_NAME = "robot_ewellix_lift_top_joint"
+    #: The lift moved from robotnik_description to ewellix_description, and with
+    #: it from one joint to two. The old name 'robot_ewellix_lift_top_joint' is
+    #: not in the current model -- sending it to MoveIt aborts move_group.
+    #: Confirm against `ros2 topic echo /robot/joint_states --once`.
+    LIFT_JOINT_NAMES = ["robot_lift_lower_joint", "robot_lift_upper_joint"]
+
+    #: Single-joint alias kept for set_lift_height, which commands one joint.
+    LIFT_JOINT_NAME = "robot_lift_upper_joint"
 
     def ros_message_type(self, package, name):
         """Build a message type name for the connected ROS version.
@@ -342,24 +349,36 @@ class MobileRobotClient(object):
         """How many joint values have arrived so far. 0 means nothing is coming."""
         return len(self.current_joint_values)
 
-    def get_current_configuration(self):
-        joint_names_ordered = [
-            "robot_ewellix_lift_top_joint",
-            "robot_arm_shoulder_pan_joint",
-            "robot_arm_shoulder_lift_joint",
-            "robot_arm_elbow_joint",
-            "robot_arm_wrist_1_joint",
-            "robot_arm_wrist_2_joint",
-            "robot_arm_wrist_3_joint",
-        ]
-        joint_values_ordered = [
-            self.current_joint_values.get(joint_name, 0.0)
-            for joint_name in joint_names_ordered
-        ]
-        joint_types_ordered = [2, 0, 0, 0, 0, 0, 0]
-        return Configuration(
-            joint_values_ordered, joint_types_ordered, joint_names_ordered
-        )
+    def get_current_configuration(self, joint_names=None):
+        """Configuration in lift-then-arm order, for the URScript path.
+
+        Only joints actually present in ``current_joint_values`` are included.
+        A name that has not been heard from is dropped rather than filled with
+        0.0, because an invented joint value is indistinguishable from a real
+        one, and a name the robot model does not have will abort move_group if
+        it reaches /apply_planning_scene.
+
+        For planning, prefer ``MobileRobot.current_configuration()``, which
+        derives its names from the loaded URDF instead of the lists below.
+
+        Parameters
+        ----------
+        joint_names : list[str], optional
+            Ordered names to include. Defaults to
+            :attr:`LIFT_JOINT_NAMES` + :attr:`ARM_JOINT_NAMES`.
+        """
+        joint_names = joint_names or (list(self.LIFT_JOINT_NAMES) + list(self.ARM_JOINT_NAMES))
+
+        names, values, types = [], [], []
+        for name in joint_names:
+            if name not in self.current_joint_values:
+                continue
+            names.append(name)
+            values.append(self.current_joint_values[name])
+            # 2 == prismatic for the lift joints, 0 == revolute for the arm.
+            types.append(2 if name in self.LIFT_JOINT_NAMES else 0)
+
+        return Configuration(values, types, names)
 
     def echo_robot_odom(self):
         pass

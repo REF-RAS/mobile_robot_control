@@ -24,6 +24,7 @@ itself, exactly as the v1 code did.  Pass frames in WCF to the planning helpers
 
 from compas.geometry import Frame, Point, Quaternion
 from compas.geometry import Transformation
+from compas_robots import Configuration
 
 from compas_fab.robots import ConfigurationTarget
 from compas_fab.robots import FrameTarget
@@ -440,9 +441,42 @@ class MobileRobot(object):
         """
         if self.mobile_client is None:
             return None
-        if require_live and not self.mobile_client.current_joint_values:
+
+        values = self.mobile_client.current_joint_values
+        if require_live and not values:
             return None
-        return self.mobile_client.get_current_configuration()
+
+        # Built from the MODEL's joints, intersected with what actually
+        # arrived -- never from a hardcoded name list.
+        #
+        # MoveIt does not reject an unknown joint name, it aborts on one:
+        #   Variable 'robot_ewellix_lift_top_joint' is not known to model
+        #   'rbvogui_xl_plus' -> terminate called -> move_group dies (SIGABRT).
+        # A stale name in a client-side list therefore takes the robot's
+        # planner down, not just the request. Since the model comes from the
+        # live URDF, intersecting with it makes that impossible.
+        joint_values, joint_types, joint_names = [], [], []
+        for joint in self.robot_cell.get_all_configurable_joints():
+            if joint.name in values:
+                joint_values.append(values[joint.name])
+                joint_types.append(joint.type)
+                joint_names.append(joint.name)
+
+        if not joint_names:
+            return None
+        return Configuration(joint_values, joint_types, joint_names)
+
+    def unknown_joint_names(self, configuration):
+        """Joint names in ``configuration`` that the robot model does not have.
+
+        Anything returned here would abort move_group if it reached
+        ``/apply_planning_scene``, so callers should treat a non-empty result
+        as fatal to the request rather than passing it on.
+        """
+        if not configuration or not configuration.joint_names:
+            return []
+        known = {j.name for j in self.robot_cell.get_all_configurable_joints()}
+        return [n for n in configuration.joint_names if n not in known]
 
     def cell_state_at(self, configuration=None, group=None):
         """Get a copy of the cell state with ``configuration`` applied.
@@ -462,6 +496,22 @@ class MobileRobot(object):
         """
         state = self.robot_cell_state.copy()
         if configuration is not None:
+            # Refuse to build a state around a joint the model does not have.
+            # Such a state, sent to /apply_planning_scene, aborts move_group
+            # outright (SIGABRT, not an error response) -- so failing loudly
+            # here is far cheaper than the robot's planner dying.
+            unknown = self.unknown_joint_names(configuration)
+            if unknown:
+                raise ValueError(
+                    "Configuration contains joints the robot model does not have: "
+                    "%s.\nModel '%s' has: %s.\nSending these to MoveIt would abort "
+                    "move_group, so the request is refused here."
+                    % (
+                        ", ".join(unknown),
+                        self.robot_model.name,
+                        ", ".join(self.robot_cell.get_all_configurable_joint_names()),
+                    )
+                )
             state.robot_configuration = self.full_configuration(
                 configuration, state.robot_configuration
             )
