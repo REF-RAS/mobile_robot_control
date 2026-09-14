@@ -3,7 +3,7 @@
 COMPAS FAB v2.0.1
 
 Inputs : robot, target, start_configuration, group, use_live_start (bool),
-         path_constraints, planner_id, compute (Button)
+        path_constraints, planner_id, compute (Button)
 Outputs: out, trajectory, start_used
 
 CONTRACT CHANGES FROM V1
@@ -60,6 +60,39 @@ use_live_start = True if use_live_start is None else use_live_start  # noqa: F82
 start_used = None
 source = None
 blocked = None
+
+
+def as_single(value):
+    """Unwrap a one-item list into the item itself.
+
+    v1 declared `goal_constraints` with List access, because it passed a list
+    of constraints. Renaming the parameter to `target` does not change its
+    access mode, so a single FrameTarget arrives wrapped as
+    System.Collections.Generic.List[Object] and compas_fab rejects it with
+    "Target type ... not supported by ROS planning backend" -- an error about
+    the type, which reads nothing like a Grasshopper access-mode setting.
+
+    Setting the input to Item access is the real fix. This keeps the component
+    working either way. Strings are excluded because they are iterable but are
+    never the container meant here, and anything carrying `target_mode` is
+    already a Target and passes through untouched.
+    """
+    if value is None or isinstance(value, str) or hasattr(value, "target_mode"):
+        return value
+    if not hasattr(value, "__len__"):
+        return value
+    try:
+        unwrapped = list(value)
+    except TypeError:
+        return value
+    if len(unwrapped) == 1:
+        return unwrapped[0]
+    if not unwrapped:
+        return None
+    return value
+
+
+target = as_single(target)  # noqa: F821
 
 # --------------------------------------------------------------------------
 # Decide the start state
@@ -120,10 +153,10 @@ if compute:  # noqa: F821
             lines.append("PLANNED %d points" % len(traj.points))
             lines.append("  group  : %s" % group_name)
             lines.append("  start  : %s  (%s)"
-                         % ([round(v, 3) for v in start_used.joint_values], source))
+                        % ([round(v, 3) for v in start_used.joint_values], source))
             if traj.points:
                 lines.append("  end    : %s"
-                             % [round(v, 3) for v in traj.points[-1].joint_values])
+                            % [round(v, 3) for v in traj.points[-1].joint_values])
                 lines.append("  time   : %.2fs" % traj.points[-1].time_from_start.seconds)
         except Exception as e:
             lines.append("PLANNING FAILED: %s: %s" % (type(e).__name__, e))

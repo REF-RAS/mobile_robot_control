@@ -32,6 +32,24 @@ so the original source runs untouched:
 | `09_plan_motion.py` | `plan motion` | goes through the planner; takes a target |
 | `10_trajectory_visualize.py` | `trajectory visualize` | config merge + FK + `time_from_start` |
 | `11_visualise.py` | `Visualise` | scene object replaces artist; see notes in file |
+| `12_select.py` | `select` | guard against a null list |
+| `98_diagnose_joint_states.py` | new | which joint-state topic and type deliver |
+| `99_diagnose_tf.py` | new | whether TF reaches GH, by both routes |
+| `00_reload_modules.py` | new | reload the libraries without restarting Rhino |
+| `01_load_mobile_robot.py` | `mobile robot` | classifies load failures instead of losing them |
+
+## Access modes matter
+
+Renaming a parameter does not change its access mode. `plan motion`'s
+`goal_constraints` was **List** access in v1, since v1 passed a list of
+constraints. Renamed to `target` it still arrived as
+`System.Collections.Generic.List[Object]`, and compas_fab rejected the
+container type with an error that says nothing about Grasshopper.
+
+Set `target` to **Item** access. The script also unwraps a one-item list, so
+it works either way. Checked the rest: `Visualise.bang` is the only other
+list-access input among the ported components, and nothing reads it.
+
 
 ## Contract changes worth knowing
 
