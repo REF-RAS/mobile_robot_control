@@ -235,6 +235,27 @@ the button releasing.
 
 ## 7. Display and memory
 
+### Red grids filling the viewport
+
+Not the plane outputs, despite appearances. Turning preview off on
+`trajectory visualize.planes` and disabling the Draw group's `Visualize` both
+left them, while `Display -> Preview Off` removed them -- so it is Grasshopper,
+downstream of the component that produced it.
+
+The three Custom Previews in the Draw group take `G` from **`Geo` params**, and
+a Geometry param holds internalised data of its own. Disabling the producer
+leaves the param still holding, and still previewing, its last values. Custom
+Preview also draws regardless of any upstream preview setting.
+
+To clear: right-click each **Custom Preview** -> Preview off, then each **`Geo`
+param** -> Preview off if any remain.
+
+To find which component owns a given preview: select it on the canvas and
+Grasshopper highlights its geometry green in the viewport.
+
+None of this is part of the robot chain -- the assembly cluster feeds nothing
+downstream of `mobile robot`, so its previews can stay off indefinitely.
+
 ### Too many plane previews
 
 `trajectory visualize.planes` emits one plane per trajectory point, and
