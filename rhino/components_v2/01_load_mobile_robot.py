@@ -196,9 +196,17 @@ if mobile_robot and ros_client and ros_client.is_connected:  # noqa: F821
             # attach_planner builds a MoveItPlanner and uploads the cell. Its
             # constructor resets MoveIt's planning scene, so this must not run
             # on every solve.
-            planner = mobile_robot.attach_planner(ros_client)  # noqa: F821
+            #
+            # `namespace` matters: compas_fab hardcodes unnamespaced MoveIt
+            # service names (/plan_kinematic_path and six others). move_group
+            # runs under /robot here, so without the prefix every call waits on
+            # a service nobody provides and times out -- which reads as
+            # "move_group is down" rather than "wrong service name".
+            planner = mobile_robot.attach_planner(ros_client, namespace=prefix)  # noqa: F821
             st[planner_key] = planner
-            planner_note = "planner attached, cell uploaded to MoveIt"
+            planner_note = "planner attached, services under '%s', cell uploaded" % (
+                "/" + prefix.strip("/") if prefix else "(no namespace)"
+            )
         else:
             mobile_robot.planner = planner
             planner_note = "planner reused from cache"

@@ -267,7 +267,81 @@ class MobileRobot(object):
         if self.planner is not None:
             self.planner.set_robot_cell(self.robot_cell, self.robot_cell_state)
 
-    def attach_planner(self, client=None, planner=None, robot_cell_state=None):
+    @staticmethod
+    def namespace_planner_services(planner, namespace):
+        """Prefix a MoveIt planner's service names with a ROS namespace.
+
+        compas_fab hardcodes unnamespaced MoveIt service names --
+        ``/plan_kinematic_path``, ``/compute_ik`` and five others. A robot whose
+        move_group runs inside a namespace answers on ``/<ns>/plan_kinematic_path``
+        instead, so every call times out waiting for a service that nothing
+        provides. The failure looks like "move_group is down" rather than
+        "wrong name".
+
+        ``ServiceDescription.name`` is read at call time, so the descriptions
+        are copied onto the planner instance with the prefix applied. The class
+        attributes are left alone, so this affects only this planner.
+
+        Parameters
+        ----------
+        planner : :class:`compas_fab.backends.MoveItPlanner`
+        namespace : str
+            e.g. ``'robot'`` or ``'/robot'``. Falsy leaves the planner alone.
+
+        Returns
+        -------
+        dict
+            Attribute name -> the service name now used.
+        """
+        if not namespace:
+            return {}
+        prefixed = MobileRobot._prefixed_service_descriptions(type(planner), namespace)
+        for attr, description in prefixed.items():
+            setattr(planner, attr, description)
+        return {attr: d.name for attr, d in prefixed.items()}
+
+    @staticmethod
+    def _prefixed_service_descriptions(planner_class, namespace):
+        """Copies of ``planner_class``'s ServiceDescriptions, namespace applied."""
+        from compas_fab.backends.ros.service_description import ServiceDescription
+
+        prefix = "/" + str(namespace).strip("/")
+        out = {}
+        for cls in planner_class.__mro__:
+            for attr, value in vars(cls).items():
+                if isinstance(value, ServiceDescription) and attr not in out:
+                    out[attr] = ServiceDescription(
+                        prefix + value.name,
+                        value.type,
+                        value.request_class,
+                        value.response_class,
+                        value.validator,
+                    )
+        return out
+
+    @staticmethod
+    def namespaced_planner_class(namespace, planner_class=None):
+        """A MoveItPlanner subclass whose service names carry ``namespace``.
+
+        The names must be right *before* construction: ``MoveItPlanner.__init__``
+        calls ``reset_planning_scene()``, which is itself a service call. Patching
+        an instance afterwards is too late -- the constructor would already have
+        timed out.
+
+        Returns ``planner_class`` unchanged when ``namespace`` is falsy.
+        """
+        from compas_fab.backends import MoveItPlanner
+
+        planner_class = planner_class or MoveItPlanner
+        if not namespace:
+            return planner_class
+        return type(
+            "Namespaced" + planner_class.__name__,
+            (planner_class,),
+            MobileRobot._prefixed_service_descriptions(planner_class, namespace),
+        )
+
+    def attach_planner(self, client=None, planner=None, robot_cell_state=None, namespace=None):
         """Attach a planner and upload the cell to the backend.
 
         A ROS client can be reconnected without reloading the geometry, so this
@@ -286,14 +360,20 @@ class MobileRobot(object):
         -------
         :class:`compas_fab.backends.PlannerInterface`
         """
-        # Imported here so the module can be used without a backend available.
-        from compas_fab.backends import MoveItPlanner
-
         self.client = client or self.client
         if self.client is None:
             raise ValueError("A client is required to attach a planner.")
 
-        self.planner = planner or MoveItPlanner(self.client)
+        if planner is None:
+            # compas_fab calls unnamespaced MoveIt services. Build the class
+            # with the prefix baked in, because the constructor makes a service
+            # call of its own (reset_planning_scene) and would otherwise hang.
+            planner_class = self.namespaced_planner_class(namespace)
+            planner = planner_class(self.client)
+        elif namespace:
+            self.namespace_planner_services(planner, namespace)
+
+        self.planner = planner
         self.planner.set_robot_cell(
             self.robot_cell, robot_cell_state or self.robot_cell_state
         )
