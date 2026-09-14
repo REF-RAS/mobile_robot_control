@@ -469,21 +469,25 @@ class MobileRobot(object):
     def unknown_joint_names(self, configuration):
         """Joint names in ``configuration`` that the robot MODEL does not have.
 
-        Checked against the URDF, via ``RobotModel.get_configurable_joints()``,
-        not against ``RobotCell.get_all_configurable_joints()``. The latter also
-        strips joints the SRDF declares passive -- on this robot the four
-        steering, four wheel and upper lift joints -- which are perfectly real
-        and which MoveIt itself returns in a planned trajectory's start state.
-        Checking against the cell rejected MoveIt's own output.
+        Checked against EVERY joint in the URDF, which is the same question
+        MoveIt asks -- its abort message is "Variable '...' is not known to
+        model". Narrower sets were tried and both rejected valid data:
 
-        What this must catch is a name in neither: ``robot_ewellix_lift_top_joint``
-        from the superseded lift model, which aborts move_group outright rather
-        than being rejected. FIXED and MIMIC joints are excluded too, since
-        those are equally not settable.
+        - ``RobotCell.get_all_configurable_joints()`` also strips joints the
+          SRDF declares passive: 7 of 16 here, dropping the steering and wheel
+          joints that MoveIt returns in its own trajectory start state.
+        - ``RobotModel.get_configurable_joints()`` also strips FIXED and MIMIC:
+          15 of 16, dropping ``robot_lift_upper_joint``, a mimic of the lower
+          lift joint that MoveIt likewise reports.
+
+        A mimic or passive joint is in the model, so MoveIt accepts it. What
+        must be caught is a name that is not there at all --
+        ``robot_ewellix_lift_top_joint``, from the superseded lift description
+        -- because MoveIt does not reject that, it aborts.
         """
         if not configuration or not configuration.joint_names:
             return []
-        known = {j.name for j in self.robot_model.get_configurable_joints()}
+        known = {joint.name for joint in self.robot_model.joints}
         return [n for n in configuration.joint_names if n not in known]
 
     def cell_state_at(self, configuration=None, group=None):
@@ -517,7 +521,7 @@ class MobileRobot(object):
                     % (
                         ", ".join(unknown),
                         self.robot_model.name,
-                        ", ".join(j.name for j in self.robot_model.get_configurable_joints()),
+                        ", ".join(sorted(j.name for j in self.robot_model.joints)),
                     )
                 )
             state.robot_configuration = self.full_configuration(
