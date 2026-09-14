@@ -233,7 +233,45 @@ the button releasing.
 
 ---
 
-## 7. Known gaps
+## 7. Display and memory
+
+### Too many plane previews
+
+`trajectory visualize.planes` emits one plane per trajectory point, and
+`Visualise.joint_planes` one per link (16 on this robot). Rhino draws a plane as
+a rectangular grid, so previewing either fills the viewport with red rectangles
+and pushes memory up fast.
+
+Planes are the wrong primitive at this count. Three options, best first:
+
+1. **Turn preview off** on the plane outputs — right-click the component or the
+   param, untick Preview. The data still flows; it just stops drawing.
+2. **Use the axis drawer already on the canvas.** The unlabelled `Py3` component
+   in the Visualisation group takes planes and emits points, vectors and colours
+   for `Vector Display Ex` — short coloured axes instead of grids, far lighter
+   and far easier to read. Its `scale` slider sets the length.
+3. **Show the path, not the frames.** The `VISUALISE MOTION PATH` group takes the
+   plane origins into a `PolyLine`, giving the tool path as one curve. Usually
+   what you want from a trajectory; per-point orientation only matters when
+   checking wrist flips.
+
+### Memory
+
+Two leaks were found and fixed, both in components rather than the library:
+
+- The loader built a fresh `MobileRobotClient` every solve, each with live topic
+  subscriptions never torn down.
+- `Visualise` cached a `RobotCellObject` per cell structural signature and never
+  evicted the old one, so every tool attach or detach stranded a complete set of
+  robot meshes in sticky for the session.
+
+If memory still climbs, suspect plane previews first. Failing that, restart
+Rhino — sticky holds the cell, the scene objects and the planner for the life of
+the session by design.
+
+---
+
+## 8. Known gaps
 
 - **Direct motion commands are untested on ROS 2.** `move_forward`,
   `rotate_in_place`, `arm_move_joint`, `set_lift_height` have had their topics

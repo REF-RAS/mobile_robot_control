@@ -55,22 +55,29 @@ def cell_object(robot, visual, collision):
     would never draw it, no matter how many times update() is called. The
     signature is a hash of the robot name plus the tool and rigid-body ids, so
     attaching, detaching or renaming anything yields a new key and a rebuild.
+
+    Superseded entries are evicted. Without that, every attach or detach left a
+    complete RobotCellObject -- all the robot's meshes -- stranded in sticky for
+    the life of the Rhino session, since nothing else ever looks at that key
+    again. A few tool changes and you are holding several copies of the robot.
     """
     signature = robot.robot_cell.structural_signature()
-    key = create_id(  # noqa: F821
-        ghenv.Component,  # noqa: F821
-        "cell_%s_%s_%s" % (visual, collision, signature),
-    )
-    scene_object = st.get(key)
-    if scene_object is None:
-        scene_object = SceneObject(
+    cache_key = create_id(ghenv.Component, "cell_objects")  # noqa: F821
+    cache = st.setdefault(cache_key, {})
+
+    # Drop anything built for a different cell structure.
+    for stale in [k for k in cache if k[0] != signature]:
+        del cache[stale]
+
+    entry = (signature, visual, collision)
+    if entry not in cache:
+        cache[entry] = SceneObject(
             item=robot.robot_cell,
             sceneobject_type=RobotCellObject,
             draw_visual=visual,
             draw_collision=collision,
         )
-        st[key] = scene_object
-    return scene_object
+    return cache[entry]
 
 
 if robot:  # noqa: F821
