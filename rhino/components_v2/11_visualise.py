@@ -74,6 +74,19 @@ def cell_object(robot, visual, collision):
 
 
 if robot:  # noqa: F821
+    # A null configuration is NOT an error to display_cell_state -- it returns
+    # the cell's default state, whose configuration is all zeros. So an
+    # upstream null arrives here as a perfectly plausible zero pose rather than
+    # a failure, and the robot silently draws itself folded up at zero while
+    # everything appears to work. Say so instead.
+    if configuration is None:  # noqa: F821
+        print("No configuration wired -- drawing the cell's DEFAULT pose (all zeros).")
+        print("   If you expected a trajectory pose, the upstream List Item or")
+        print("   Stream Filter is producing null. Check that its output type")
+        print("   hint is unset: a hinted output converts Configuration to null.")
+    else:
+        print("configuration: %d joints" % len(configuration.joint_names))  # noqa: F821
+
     # robot_base_frame = BCF, so everything draws where the base actually is.
     state = robot.display_cell_state(configuration)  # noqa: F821
 

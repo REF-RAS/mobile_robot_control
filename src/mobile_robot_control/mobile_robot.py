@@ -467,15 +467,23 @@ class MobileRobot(object):
         return Configuration(joint_values, joint_types, joint_names)
 
     def unknown_joint_names(self, configuration):
-        """Joint names in ``configuration`` that the robot model does not have.
+        """Joint names in ``configuration`` that the robot MODEL does not have.
 
-        Anything returned here would abort move_group if it reached
-        ``/apply_planning_scene``, so callers should treat a non-empty result
-        as fatal to the request rather than passing it on.
+        Checked against the URDF, via ``RobotModel.get_configurable_joints()``,
+        not against ``RobotCell.get_all_configurable_joints()``. The latter also
+        strips joints the SRDF declares passive -- on this robot the four
+        steering, four wheel and upper lift joints -- which are perfectly real
+        and which MoveIt itself returns in a planned trajectory's start state.
+        Checking against the cell rejected MoveIt's own output.
+
+        What this must catch is a name in neither: ``robot_ewellix_lift_top_joint``
+        from the superseded lift model, which aborts move_group outright rather
+        than being rejected. FIXED and MIMIC joints are excluded too, since
+        those are equally not settable.
         """
         if not configuration or not configuration.joint_names:
             return []
-        known = {j.name for j in self.robot_cell.get_all_configurable_joints()}
+        known = {j.name for j in self.robot_model.get_configurable_joints()}
         return [n for n in configuration.joint_names if n not in known]
 
     def cell_state_at(self, configuration=None, group=None):
@@ -509,7 +517,7 @@ class MobileRobot(object):
                     % (
                         ", ".join(unknown),
                         self.robot_model.name,
-                        ", ".join(self.robot_cell.get_all_configurable_joint_names()),
+                        ", ".join(j.name for j in self.robot_model.get_configurable_joints()),
                     )
                 )
             state.robot_configuration = self.full_configuration(
