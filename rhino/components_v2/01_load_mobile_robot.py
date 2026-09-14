@@ -59,6 +59,18 @@ mobile_client_key = key + "_mobile_client"
 prefix = prefix or ""  # noqa: F821
 file_server = file_server or None  # noqa: F821
 
+# Namespace for MoveIt's SERVICES, which is not the same as the topic prefix.
+#
+# On this robot the topics are namespaced (/robot/robot_description) but
+# move_group's services are not (/plan_kinematic_path, verified with
+# `ros2 service list`). compas_fab hardcodes the unnamespaced names, so an
+# empty value here is correct and no rewriting happens.
+#
+# Set this to 'robot' (or whatever `ros2 service list | grep plan_kinematic_path`
+# shows) if a future bringup launches move_group inside a namespace -- otherwise
+# every planning call waits on a service nobody provides and times out.
+MOVEIT_NAMESPACE = ""
+
 
 def base_url():
     """The URL load_robot_cell will use, including the client's own default."""
@@ -197,15 +209,14 @@ if mobile_robot and ros_client and ros_client.is_connected:  # noqa: F821
             # constructor resets MoveIt's planning scene, so this must not run
             # on every solve.
             #
-            # `namespace` matters: compas_fab hardcodes unnamespaced MoveIt
-            # service names (/plan_kinematic_path and six others). move_group
-            # runs under /robot here, so without the prefix every call waits on
-            # a service nobody provides and times out -- which reads as
-            # "move_group is down" rather than "wrong service name".
-            planner = mobile_robot.attach_planner(ros_client, namespace=prefix)  # noqa: F821
+            # MOVEIT_NAMESPACE, not `prefix` -- see the note at the top. The
+            # topics are namespaced on this robot but the services are not.
+            planner = mobile_robot.attach_planner(  # noqa: F821
+                ros_client, namespace=MOVEIT_NAMESPACE  # noqa: F821
+            )
             st[planner_key] = planner
-            planner_note = "planner attached, services under '%s', cell uploaded" % (
-                "/" + prefix.strip("/") if prefix else "(no namespace)"
+            planner_note = "planner attached (MoveIt services under '%s'), cell uploaded" % (
+                "/" + MOVEIT_NAMESPACE.strip("/") if MOVEIT_NAMESPACE else "/"
             )
         else:
             mobile_robot.planner = planner

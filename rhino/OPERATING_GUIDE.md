@@ -22,6 +22,24 @@ starts automatically — check all four before a session.
 | **robot_state_publisher** | — | URDF/SRDF, joint states | `ros2 topic echo /robot/robot_description --once` |
 | **move_group** (MoveIt) | — | IK and motion planning | `ros2 node list \| grep move_group` |
 
+### Namespacing: topics yes, services no
+
+This robot namespaces its **topics** under `robot` (`/robot/robot_description`,
+`/robot/joint_states`) but move_group's **services** are not namespaced --
+`/plan_kinematic_path`, not `/robot/plan_kinematic_path`. Verified with
+`ros2 service list | grep plan_kinematic_path`.
+
+So the loader's `prefix` input (topics) and its `MOVEIT_NAMESPACE` constant
+(services) are deliberately different. compas_fab hardcodes unnamespaced
+service names, so `MOVEIT_NAMESPACE = ""` is correct here and no rewriting
+happens. If a future bringup launches move_group inside a namespace, set it --
+otherwise every planning call waits on a service nobody provides and times out.
+
+Note that a missing move_group looks identical to a wrong service name: both
+give `Timeout exceeded while waiting for service response`. Check
+`ros2 node list | grep move_group` first.
+
+
 ### The mesh server
 
 There is no ROS 2 equivalent of the ROS 1 `file_server` package, so this is a
