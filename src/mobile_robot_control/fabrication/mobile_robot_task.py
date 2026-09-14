@@ -38,19 +38,25 @@ MOBILE_ROBOT_JOINT_NAMES = (
 
 
 def _reorder_configuration(robot, trajectory_point, trajectory, group):
-    """Expand a group trajectory point to the mobile robot's joint order."""
+    """Expand a group trajectory point to the mobile robot's joint order.
+
+    Joints absent from the merged configuration are skipped rather than
+    raising. ``list.index`` throws ValueError on a missing name, which turned a
+    joint-naming mismatch into an unrelated-looking error deep in the task
+    loop; the names come from the robot's URDF and have changed once already.
+    """
     config = robot.full_configuration(trajectory_point, trajectory.start_configuration)
-    joint_values_ordered = [
-        config.joint_values[config.joint_names.index(joint_name)]
-        for joint_name in MOBILE_ROBOT_JOINT_NAMES
-    ]
-    joint_types_ordered = [
-        config.joint_types[config.joint_names.index(joint_name)]
-        for joint_name in MOBILE_ROBOT_JOINT_NAMES
-    ]
-    return Configuration(
-        joint_values_ordered, joint_types_ordered, MOBILE_ROBOT_JOINT_NAMES
-    )
+
+    names, values, types = [], [], []
+    for joint_name in MOBILE_ROBOT_JOINT_NAMES:
+        if joint_name not in config.joint_names:
+            continue
+        index = config.joint_names.index(joint_name)
+        names.append(joint_name)
+        values.append(config.joint_values[index])
+        types.append(config.joint_types[index])
+
+    return Configuration(values, types, names)
 
 __all__ = [
     "MoveJointsTask",

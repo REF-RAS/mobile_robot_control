@@ -296,14 +296,19 @@ class MobileRobotClient(object):
         "robot_arm_wrist_2_joint",
         "robot_arm_wrist_3_joint",
     ]
-    #: The lift moved from robotnik_description to ewellix_description, and with
-    #: it from one joint to two. The old name 'robot_ewellix_lift_top_joint' is
-    #: not in the current model -- sending it to MoveIt aborts move_group.
-    #: Confirm against `ros2 topic echo /robot/joint_states --once`.
-    LIFT_JOINT_NAMES = ["robot_lift_lower_joint", "robot_lift_upper_joint"]
+    #: The lift moved from robotnik_description to ewellix_description. The old
+    #: name 'robot_ewellix_lift_top_joint' is not in the current model, and
+    #: sending it to MoveIt aborts move_group rather than returning an error.
+    #:
+    #: Confirmed against `ros2 topic echo /robot/joint_states --once`: the lift
+    #: publishes exactly one joint. The model also defines
+    #: robot_lift_upper_joint, but it does not appear in joint states -- almost
+    #: certainly a mimic of the lower joint, which makes it non-configurable and
+    #: correctly absent here.
+    LIFT_JOINT_NAMES = ["robot_lift_lower_joint"]
 
-    #: Single-joint alias kept for set_lift_height, which commands one joint.
-    LIFT_JOINT_NAME = "robot_lift_upper_joint"
+    #: The joint set_lift_height commands.
+    LIFT_JOINT_NAME = "robot_lift_lower_joint"
 
     def ros_message_type(self, package, name):
         """Build a message type name for the connected ROS version.
