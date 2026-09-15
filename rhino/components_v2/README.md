@@ -28,6 +28,7 @@ so the original source runs untouched:
 | `03_set_frame.py` | `set frame` | drop dead v1 imports |
 | `04_tool.py` | `tool` | `Tool` -> `ToolModel` |
 | `06_inverse.py` | `inverse` | guard on `robot.planner` |
+| `07_analytic_inverse.py` | `analytic inverse` x4 | lift double-count removed; lift read from joint states |
 | `08_frame_target.py` | `constraints from plane` | outputs a `FrameTarget`, not constraints |
 | `09_plan_motion.py` | `plan motion` | goes through the planner; takes a target |
 | `10_trajectory_visualize.py` | `trajectory visualize` | config merge + FK + `time_from_start` |
