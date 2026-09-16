@@ -159,9 +159,50 @@ if compute:  # noqa: F821
                             % [round(v, 3) for v in traj.points[-1].joint_values])
                 lines.append("  time   : %.2fs" % traj.points[-1].time_from_start.seconds)
         except Exception as e:
-            lines.append("PLANNING FAILED: %s: %s" % (type(e).__name__, e))
-            lines.append("  Is move_group running? Is the target reachable and")
-            lines.append("  collision free from this start pose?")
+            text = "%s: %s" % (type(e).__name__, e)
+            lines.append("PLANNING FAILED: %s" % text)
+
+            # MoveIt names its own error codes; the negatives are specific,
+            # 99999 (FAILURE) is the catch-all it uses when it declines to say.
+            hints = [
+                ("START_STATE_IN_COLLISION", [
+                    "The robot is already in collision at the start pose.",
+                    "Check the attached tool and any rigid bodies in the cell.",
+                ]),
+                ("GOAL_IN_COLLISION", ["The target pose collides with the cell."]),
+                ("GOAL_CONSTRAINTS_VIOLATED", [
+                    "Reached a pose that does not satisfy the tolerances.",
+                    "Try loosening tolerance_position / tolerance_orientation.",
+                ]),
+                ("NO_IK_SOLUTION", [
+                    "The target is unreachable for this planning group.",
+                    "Check it is within arm reach of the CURRENT base position.",
+                ]),
+                ("INVALID_GROUP_NAME", [
+                    "The `group` input does not name a group in the SRDF.",
+                    "Run robot.info() to list the valid group names.",
+                ]),
+                ("TIMED_OUT", ["Planning ran out of time; raise allowed_planning_time."]),
+                ("FAILURE", [
+                    "MoveIt's catch-all -- it did not classify the failure.",
+                    "The real reason is in move_group's own log on the robot;",
+                    "that terminal prints e.g. 'Unable to solve the planning",
+                    "problem' or a collision pair.",
+                    "",
+                    "Most common causes, in order:",
+                    "  - target out of reach from the CURRENT base position",
+                    "  - start or goal in collision with an attached tool",
+                    "  - target orientation unreachable even if the point is not",
+                ]),
+            ]
+            for name, advice in hints:
+                if name in text:
+                    for line in advice:
+                        lines.append("  %s" % line)
+                    break
+            else:
+                lines.append("  Is move_group running? Is the target reachable and")
+                lines.append("  collision free from this start pose?")
 
     st[report_key] = {"when": time.strftime("%H:%M:%S"), "lines": lines}
 
