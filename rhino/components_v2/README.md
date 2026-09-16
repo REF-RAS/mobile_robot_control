@@ -39,6 +39,36 @@ so the original source runs untouched:
 | `00_reload_modules.py` | new | reload the libraries without restarting Rhino |
 | `01_load_mobile_robot.py` | `mobile robot` | classifies load failures instead of losing them |
 
+## This definition is strictly ONLINE
+
+It assumes a live robot. Anything the robot can measure is read from the robot,
+never taken as an input:
+
+- lift position -> `robot_lift_lower_joint` on /robot/joint_states
+- arm pose      -> the same topic
+- arm base (RCF)-> URDF forward kinematics over those joint states
+
+Where a measurement is missing, components **refuse to produce a result and say
+why**, rather than substituting a plausible number. A value that looks
+authoritative but was never measured is the more dangerous outcome: it is
+executed as though it were true, and nothing downstream corrects it. URScript's
+movej drives the six arm joints only, so an assumed lift height simply stays
+wrong.
+
+An offline equivalent can be developed separately if bench work needs it. The
+feasible subset -- with a locally cached robot cell -- would be `Visualise`,
+`forward kinematics`, `zero`, `set frame`, `tool`, `attach tool`, analytic IK
+with an assumed lift, and the whole assembly cluster. `plan motion`, `inverse`
+and anything reading joint states genuinely need the robot.
+
+Do not add offline affordances to components in this file. Keeping the two
+apart is what stops an assumed value reaching execution.
+
+One inherited exception: `plan motion` has a `use_live_start` toggle that
+allows a wired start configuration. It is deliberate and loud -- off by default,
+and it refuses rather than silently falling back -- but it predates this policy
+and would belong in the offline file.
+
 ## Access modes matter
 
 Renaming a parameter does not change its access mode. `plan motion`'s
