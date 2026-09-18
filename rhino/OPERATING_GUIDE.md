@@ -122,8 +122,16 @@ Order matters. Each step depends on the one before.
 | 6 | `get joint states` | `subscribe` | press | loader shows `N joints held` |
 | 7 | `Trigger` | play | start | live pose updates every 2s |
 
-**Step 2 takes ~16 seconds** — it downloads 30 meshes. The cell is then cached
-in sticky; don't press `load` again unless the geometry changed.
+**Step 2 takes ~16 seconds on the first load of a session** — it downloads 30
+meshes. The cell is then held in sticky for the session *and* written to disk at
+`~/.mobile_robot_control/robot_cells`. Don't press `load` again unless the
+geometry changed.
+
+If the robot cannot be reached, `load` falls back to that disk cache and says
+`OFFLINE -- LOADED '<name>' FROM CACHE`. You get geometry only: no client, no
+planner, no joint states, so `plan motion`, `inverse` and `analytic inverse`
+refuse as usual. `Visualise`, `forward kinematics`, `zero`, `set frame`, `tool`
+and `attach tool` all work. See §9.
 
 **Step 5 uploads the cell to MoveIt.** Check the output says
 `uploaded to MoveIt: True`. If it says `False` the planner isn't attached and
@@ -305,3 +313,37 @@ the session by design.
   needs the absent republisher.
 - **`Orient` components elsewhere** expect to share a base plane with
   `set frame`; they will disagree about the base position until rewired.
+
+
+---
+
+## 9. The robot cell cache
+
+`~/.mobile_robot_control/robot_cells/robot_AB.json` — the last cell the robot
+published, meshes included, plus a `.meta.json` sidecar recording when it was
+written and where from.
+
+Deliberately outside the repo: the file runs to tens of megabytes and the
+workspace sits in a synced OneDrive folder.
+
+| Want to | Do |
+|---|---|
+| Refresh it | Connect to the robot and press `load` — every successful online load rewrites it |
+| Work offline | Just press `load`. With no robot reachable it falls back and says so |
+| Check its age | The loader prints `disk cached cell : '<name>', N days old` every solve |
+| Throw it away | Delete the two files, or `robot_cell_cache.clear("robot_AB")` |
+
+### When to distrust it
+
+Nothing here can tell that a cached cell has gone stale — detecting that would
+need the robot online, and if it were online you wouldn't be reading the cache.
+So refresh it after anything that changes the robot's description: a reflash, an
+arm or tool swap, a URDF edit on the robot.
+
+### Don't build one from `data/`
+
+The URDFs in `mobile_robot_control/data/` describe a **different machine**.
+`rbvogui_xl_lift_ur20_indoor_spraying_tool.urdf` is named `rbvogui` where the
+robot publishes `rbvogui_xl_plus`, carries a spraying tool from an unrelated
+project, and references packages that don't resolve here. It would load and
+draw, and be wrong. Populate the cache from the robot or not at all.

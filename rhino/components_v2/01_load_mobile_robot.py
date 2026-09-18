@@ -1,11 +1,22 @@
-"""Load the mobile robot cell directly from ROS 2.
+"""Load the mobile robot cell from ROS 2, or from the disk cache when offline.
 
 COMPAS FAB v2.0.1
+
+Every successful online load writes the cell to
+``~/.mobile_robot_control/robot_cells``. If the robot cannot be reached, the
+cached cell is loaded instead and the component says so in bold. That makes the
+16-second mesh download a once-per-robot-change cost rather than a
+once-per-restart one, and lets the geometry-only parts of the definition run
+with the robot switched off.
+
+The cache holds the robot's *description*, never its state -- see the long note
+above the load block. Offline there is no client and no planner, so everything
+that needs a measurement still refuses.
 
 Inputs
 ------
 ros_client  : a connected compas_fab.backends.RosClient
-load        : Button -- re-fetch the cell from ROS (slow: downloads meshes)
+load        : Button -- fetch the cell (from ROS if reachable, else the cache)
 prefix      : str, ROS namespace -- 'robot' on this machine
 file_server : str, HTTP mesh server, e.g. 'http://192.168.0.200:9190'
 
@@ -43,6 +54,7 @@ from scriptcontext import sticky as st
 from compas.scene import SceneObject
 from compas_fab.ghpython.scene import RobotCellObject
 
+from mobile_robot_control import robot_cell_cache
 from mobile_robot_control.mobile_robot import MobileRobot
 from mobile_robot_control.mobile_robot_client import MobileRobotClient
 
@@ -128,51 +140,117 @@ def diagnose(exc, url):
     return ("LOAD FAILED", [text])
 
 
+def build(robot_cell, source):
+    """Wrap a cell in a MobileRobot and put it in sticky.
+
+    `source` is recorded on the instance so every downstream component can tell
+    a cell fetched from the robot from one read off disk. Nothing else in the
+    definition needs to care -- but if a mesh ever looks wrong, the first
+    question is which of the two you are looking at.
+    """
+    mobile_robot = MobileRobot(
+        robot_cell,
+        robot_cell_state=robot_cell.default_cell_state(),
+        scene_object=SceneObject(item=robot_cell, sceneobject_type=RobotCellObject),
+    )
+    mobile_robot.attributes["cell_source"] = source
+    st[key] = mobile_robot
+    st.pop(planner_key, None)  # a new cell must be re-uploaded to MoveIt
+    return mobile_robot
+
+
 # --------------------------------------------------------------------------
-# Load the cell from ROS. Cached: this is the slow, network-bound step.
+# Load the cell. From ROS when the robot is reachable, otherwise from the
+# disk cache.
+#
+# WHY A CACHE IS NOT A POLICY VIOLATION
+# -------------------------------------
+# This definition is strictly online (see README.md): nothing the robot can
+# measure may be supplied by hand. The cell is not a measurement. It is the
+# robot's *description* -- link geometry and kinematics, which do not change
+# while the robot drives around. Caching it removes a 16-second download; it
+# invents nothing.
+#
+# What the cache deliberately does NOT provide is a client or a planner. With
+# no ROS connection there are no joint states, no lift height and no MoveIt,
+# so `plan motion`, `inverse` and `analytic inverse` refuse exactly as they
+# did before. Offline you get the robot's shape, and nothing about its state.
 # --------------------------------------------------------------------------
 if load:  # noqa: F821
     url = base_url()
-    if not (ros_client and ros_client.is_connected):  # noqa: F821
-        st[status_key] = {
-            "ok": False, "when": time.strftime("%H:%M:%S"),
-            "headline": "NOT CONNECTED TO ROS",
-            "detail": ["Connect the RosClient component first."],
-        }
-    else:
+    cache_note = None
+    try:
+        if not (ros_client and ros_client.is_connected):  # noqa: F821
+            raise URLError("not connected to ROS")
+
         reachable, detail = check_file_server(url)
+        if not reachable:
+            raise URLError(detail)
+
+        robot_cell = ros_client.load_robot_cell(  # noqa: F821
+            load_geometry=True,
+            urdf_param_name="{}/robot_description".format(prefix),
+            srdf_param_name="{}/robot_description_semantic".format(prefix),
+            http_file_server_base_url=file_server,
+        )
+        build(robot_cell, "ros")
+
+        # Refresh the cache on every successful online load, so what is on
+        # disk is always the last cell the robot actually published. A write
+        # failure must not fail the load -- the cell in hand is good.
         try:
-            if not reachable:
-                raise URLError(detail)
+            meta = robot_cell_cache.save(robot_cell, key, source=url)
+            cache_note = "cached %.1f MB to %s" % (meta["bytes"] / 1048576.0, meta["path"])
+        except Exception as e:
+            cache_note = "CACHE WRITE FAILED (%s: %s) -- load itself was fine" % (
+                type(e).__name__, e)
 
-            robot_cell = ros_client.load_robot_cell(  # noqa: F821
-                load_geometry=True,
-                urdf_param_name="{}/robot_description".format(prefix),
-                srdf_param_name="{}/robot_description_semantic".format(prefix),
-                http_file_server_base_url=file_server,
-            )
-            mobile_robot = MobileRobot(
-                robot_cell,
-                robot_cell_state=robot_cell.default_cell_state(),
-                scene_object=SceneObject(item=robot_cell, sceneobject_type=RobotCellObject),
-            )
-            st[key] = mobile_robot
-            st.pop(planner_key, None)  # a new cell must be re-uploaded to MoveIt
+        st[status_key] = {
+            "ok": True, "when": time.strftime("%H:%M:%S"),
+            "headline": "LOADED '%s' FROM THE ROBOT" % robot_cell.robot_model.name,
+            "detail": [
+                "%d links, groups: %s"
+                % (len(robot_cell.robot_model.links), ", ".join(robot_cell.group_names)),
+                "mesh server: %s (%s)" % (url, detail),
+                cache_note,
+            ],
+        }
 
-            links = len(robot_cell.robot_model.links)
+    except Exception as e:
+        headline, detail_lines = diagnose(e, url)
+
+        # Fall back to disk. Reported as its own outcome, never folded into a
+        # success: the robot was not reached, and that has to stay visible.
+        try:
+            cached_cell, meta = robot_cell_cache.load(key)
+        except ValueError as cache_error:
+            cached_cell, meta = None, None
+            detail_lines = detail_lines + ["", "Cache unusable: %s" % cache_error]
+
+        if cached_cell is not None:
+            build(cached_cell, "cache")
             st[status_key] = {
                 "ok": True, "when": time.strftime("%H:%M:%S"),
-                "headline": "LOADED '%s'" % robot_cell.robot_model.name,
-                "detail": [
-                    "%d links, groups: %s" % (links, ", ".join(robot_cell.group_names)),
-                    "mesh server: %s (%s)" % (url, detail),
+                "headline": "OFFLINE -- LOADED '%s' FROM CACHE"
+                            % cached_cell.robot_model.name,
+                "detail": robot_cell_cache.describe(key) + [
+                    "",
+                    "The robot was NOT reached: %s" % headline,
+                    "Geometry only. No joint states, no lift height, no MoveIt,",
+                    "so planning and IK will refuse. Drawing and frame algebra work.",
                 ],
+                "exc": "%s: %s" % (type(e).__name__, e),
             }
-        except Exception as e:
-            headline, detail_lines = diagnose(e, url)
+        else:
             st[status_key] = {
                 "ok": False, "when": time.strftime("%H:%M:%S"),
-                "headline": headline, "detail": detail_lines,
+                "headline": headline,
+                "detail": detail_lines + [
+                    "",
+                    "No cached cell to fall back on either. Connect to the robot",
+                    "once and press `load`; the cell is then kept on disk and",
+                    "later offline loads work without it.",
+                ],
                 "exc": "%s: %s" % (type(e).__name__, e),
             }
 
@@ -238,9 +316,17 @@ else:
         print("    (%s)" % status["exc"])
 
 print("")
-print("robot in cache : %s" % bool(mobile_robot))
+# "sticky", not "cache" -- there are now two and conflating them sent you
+# looking in the wrong place. Sticky holds the live object for this Rhino
+# session; the disk cache survives restarts.
+print("robot in sticky: %s" % bool(mobile_robot))
 print("%s" % planner_note)
 if mobile_robot:
+    source = mobile_robot.attributes.get("cell_source", "unknown")
+    if source == "cache":
+        print("cell source    : DISK CACHE -- the robot was not reached")
+    else:
+        print("cell source    : %s" % source)
     tools = ", ".join(mobile_robot.robot_cell.tool_ids) or "none"
     print("tools attached : %s" % tools)
 
@@ -258,6 +344,10 @@ if mobile_robot:
                   % ", ".join(subscribed))
         else:
             print("joint states   : not subscribed (press subscribe on `get joint states`)")
+
+print("")
+for line in robot_cell_cache.describe(key):
+    print(line if line.startswith(" ") else "disk %s" % line)
 
 # --------------------------------------------------------------------------
 # Outputs

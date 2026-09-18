@@ -64,6 +64,31 @@ and anything reading joint states genuinely need the robot.
 Do not add offline affordances to components in this file. Keeping the two
 apart is what stops an assumed value reaching execution.
 
+### The robot cell cache is not an exception to this
+
+`mobile_robot_control.robot_cell_cache` writes the loaded `RobotCell` to
+`~/.mobile_robot_control/robot_cells` after every successful online load, and
+the loader reads it back when the robot cannot be reached.
+
+That is consistent with the policy, because the cell is not a measurement. It
+is the robot's *description* -- link geometry and kinematics, which do not
+change while the robot drives around. A stale mesh draws the robot slightly
+wrong and you can see it. A stale joint angle gets executed.
+
+What the cache pointedly does not provide is a client or a planner. Offline you
+get the robot's shape and nothing about its state, so `plan motion`, `inverse`
+and `analytic inverse` refuse exactly as they did before. The loader prints
+`cell source : DISK CACHE -- the robot was not reached` for as long as that
+cell is in use.
+
+**Do not seed the cache from the URDFs in `data/`.** They describe a different
+machine: `data/rbvogui_xl_lift_ur20_indoor_spraying_tool.urdf` is named
+`rbvogui` where the robot publishes `rbvogui_xl_plus`, carries a spraying tool
+from an unrelated project, and references packages that do not resolve here.
+It would load, draw, and be wrong -- which is the failure mode this whole
+definition is built to avoid. The cache is populated from the robot or not at
+all.
+
 One inherited exception: `plan motion` has a `use_live_start` toggle that
 allows a wired start configuration. It is deliberate and loud -- off by default,
 and it refuses rather than silently falling back -- but it predates this policy
