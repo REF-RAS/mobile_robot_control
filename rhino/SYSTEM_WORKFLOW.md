@@ -161,7 +161,12 @@ Today: drag a plane and hope.
 ### Stage 5 — Task geometry
 
 The assembly cluster produces target frames in WCF. Independent of the robot,
-correctly so.
+correctly so. See `components_assembly/README.md`.
+
+The wall now generates as running bond over any number of courses, ordered
+course by course so the robot never places a brick before its support exists.
+It emits every brick regardless of reach, which is what Stage 6 and 9 below are
+for.
 
 ### Stage 6 — Partition targets into base stations **[GAP]**
 
